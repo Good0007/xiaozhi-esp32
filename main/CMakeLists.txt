@@ -132,6 +132,10 @@ elseif(CONFIG_BOARD_TYPE_SENSECAP_WATCHER)
     set(BOARD_TYPE "sensecap-watcher")
 elseif(CONFIG_BOARD_TYPE_ESP32_CGC)
     set(BOARD_TYPE "esp32-cgc")  
+elseif(CONFIG_BOARD_TYPE_SILA_1_57_TFT)
+    set(BOARD_TYPE "sila_1.57tft")
+elseif(CONFIG_BOARD_TYPE_KK_1_14_TFT)
+    set(BOARD_TYPE "kk-1.14tft")
 endif()
 file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.cc

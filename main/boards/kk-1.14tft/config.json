@@ -1,0 +1,9 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "kk-1.14tft",
+            "sdkconfig_append": []
+        }
+    ]
+}

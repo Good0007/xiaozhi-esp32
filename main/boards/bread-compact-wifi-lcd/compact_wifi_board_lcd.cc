@@ -1,5 +1,4 @@
 #include "wifi_board.h"
-#include "audio_codecs/no_audio_codec.h"
 #include "display/lcd_display.h"
 #include "system_reset.h"
 #include "application.h"
@@ -7,7 +6,7 @@
 #include "config.h"
 #include "iot/thing_manager.h"
 #include "led/single_led.h"
-
+#include "audio_codecs/es8311_audio_codec.h"
 #include <wifi_station.h>
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -64,9 +63,10 @@ LV_FONT_DECLARE(font_awesome_16_4);
 
 class CompactWifiBoardLCD : public WifiBoard {
 private:
- 
+    i2c_master_bus_handle_t i2c_bus_;
     Button boot_button_;
     LcdDisplay* display_;
+    AudioCodec *audio_codec_;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -77,6 +77,23 @@ private:
         buscfg.quadhd_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    }
+
+    void InitializeI2c() {
+        // Initialize I2C peripheral
+        i2c_master_bus_config_t i2c_bus_cfg = {
+            .i2c_port = (i2c_port_t)1,
+            .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
+            .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags = {
+                .enable_internal_pullup = 1,
+            },
+        };
+        ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
 
     void InitializeLcdDisplay() {
@@ -145,6 +162,23 @@ private:
             }
             app.ToggleChatState();
         });
+        boot_button_.OnPressDown([this]()
+                                 { Application::GetInstance().StartListening(); });
+        boot_button_.OnPressUp([this]()
+                               { Application::GetInstance().StopListening(); });
+
+        // 添加音量按钮的初始化
+        Button volume_up_button_(VOLUME_UP_BUTTON_GPIO);
+        volume_up_button_.OnPressDown([]()
+                                      {
+            // 处理音量增加的逻辑
+            ESP_LOGI(TAG, "Volume Up Button Pressed"); });
+
+        Button volume_down_button_(VOLUME_DOWN_BUTTON_GPIO);
+        volume_down_button_.OnPressDown([]()
+                                        {
+            // 处理音量减少的逻辑
+            ESP_LOGI(TAG, "Volume Down Button Pressed"); });
     }
 
     // 物联网初始化，添加对 AI 可见设备
@@ -156,8 +190,8 @@ private:
     }
 
 public:
-    CompactWifiBoardLCD() :
-        boot_button_(BOOT_BUTTON_GPIO) {
+    CompactWifiBoardLCD() : boot_button_(BOOT_BUTTON_GPIO) {
+        InitializeI2c();
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
@@ -174,13 +208,18 @@ public:
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-#ifdef AUDIO_I2S_METHOD_SIMPLEX
-        static NoAudioCodecSimplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK, AUDIO_I2S_SPK_GPIO_DOUT, AUDIO_I2S_MIC_GPIO_SCK, AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);
-#else
-        static NoAudioCodecDuplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN);
-#endif
+        audio_codec = new Es8311AudioCodec(
+            i2c_bus_, 
+            I2C_NUM_1, 
+            AUDIO_INPUT_SAMPLE_RATE, 
+            AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, 
+            AUDIO_I2S_GPIO_BCLK, 
+            AUDIO_I2S_GPIO_WS, 
+            AUDIO_I2S_GPIO_DOUT, 
+            AUDIO_I2S_GPIO_DIN,
+            AUDIO_CODEC_PA_PIN, 
+            AUDIO_CODEC_ES8311_ADDR);
         return &audio_codec;
     }
 
@@ -195,6 +234,18 @@ public:
         }
         return nullptr;
     }
+    
+    virtual void SetPowerSaveMode(bool enabled) override {
+        // 省电模式实现
+        auto codec = GetAudioCodec();
+        if (enabled) {
+            codec->EnableInput(false);
+        } else {
+            codec->EnableInput(true);
+        }
+    }
+
 };
+
 
 DECLARE_BOARD(CompactWifiBoardLCD);

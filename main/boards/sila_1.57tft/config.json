@@ -1,0 +1,9 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "sila_1.57tft",
+            "sdkconfig_append": []
+        }
+    ]
+}

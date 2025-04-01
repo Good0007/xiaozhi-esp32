@@ -51,7 +51,7 @@ config WEBSOCKET_ACCESS_TOKEN
 
 choice BOARD_TYPE
     prompt "Board Type"
-    default BOARD_TYPE_BREAD_COMPACT_WIFI
+    default BOARD_TYPE_BREAD_COMPACT_WIFI_LCD
     help
         Board type. 开发板类型
     config BOARD_TYPE_BREAD_COMPACT_WIFI
@@ -154,6 +154,10 @@ choice BOARD_TYPE
         bool "无名科技星智1.54(ML307)"
     config BOARD_TYPE_SENSECAP_WATCHER
         bool "SenseCAP Watcher"
+    config BOARD_TYPE_SILA_1_57_TFT
+        bool "sila_1.57tft"
+    config BOARD_TYPE_KK_1_14_TFT
+        bool "kk_1.14tft"
 endchoice
 
 choice DISPLAY_OLED_TYPE
@@ -173,7 +177,7 @@ endchoice
 choice DISPLAY_LCD_TYPE
     depends on BOARD_TYPE_BREAD_COMPACT_WIFI_LCD || BOARD_TYPE_BREAD_COMPACT_ESP32_LCD || BOARD_TYPE_ESP32_CGC
     prompt "LCD Type"
-    default LCD_ST7789_240X320
+    default LCD_ST7789_240X135
     help
         屏幕类型选择
     config LCD_ST7789_240X320
