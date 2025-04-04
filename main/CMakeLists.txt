@@ -138,6 +138,9 @@ elseif(CONFIG_BOARD_TYPE_SILA_1_57_TFT)
     set(BOARD_TYPE "sila_1.57tft")
 elseif(CONFIG_BOARD_TYPE_KK_1_14_TFT)
     set(BOARD_TYPE "kk-1.14tft")
+elseif(CONFIG_BOARD_TYPE_XIAOJUN_BOX)
+    # 小军盒子，使用 ESP32-S3 芯片
+    set(BOARD_TYPE "xiaojun-box")
 endif()
 file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.cc

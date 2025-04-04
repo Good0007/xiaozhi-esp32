@@ -160,6 +160,8 @@ choice BOARD_TYPE
         bool "sila_1.57tft"
     config BOARD_TYPE_KK_1_14_TFT
         bool "kk_1.14tft"
+    config BOARD_TYPE_XIAOJUN_BOX
+        bool "xiaojun-box"
 endchoice
 
 choice DISPLAY_OLED_TYPE
