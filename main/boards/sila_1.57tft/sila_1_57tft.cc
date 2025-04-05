@@ -112,7 +112,8 @@ private:
     void InitializeIot() {
         auto& thing_manager = iot::ThingManager::GetInstance();
         thing_manager.AddThing(iot::CreateThing("Speaker"));
-        thing_manager.AddThing(iot::CreateThing("Backlight"));
+        thing_manager.AddThing(iot::CreateThing("Screen"));
+        thing_manager.AddThing(iot::CreateThing("Lamp"));
     }
 
 public:
@@ -122,7 +123,9 @@ public:
         InitializeSt7789Display();
         InitializeButtons();
         InitializeIot();
-        GetBacklight()->RestoreBrightness();
+        if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
+            GetBacklight()->RestoreBrightness();
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
