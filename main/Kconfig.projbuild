@@ -162,6 +162,8 @@ choice BOARD_TYPE
         bool "kk_1.14tft"
     config BOARD_TYPE_XIAOJUN_BOX
         bool "xiaojun-box"
+    config BOARD_TYPE_AMOUR_K08
+        bool "amour-k08"
 endchoice
 
 choice DISPLAY_OLED_TYPE

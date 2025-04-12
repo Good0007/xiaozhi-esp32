@@ -141,6 +141,9 @@ elseif(CONFIG_BOARD_TYPE_KK_1_14_TFT)
 elseif(CONFIG_BOARD_TYPE_XIAOJUN_BOX)
     # 小军盒子，使用 ESP32-S3 芯片
     set(BOARD_TYPE "xiaojun-box")
+elseif(CONFIG_BOARD_TYPE_AMOUR_K08)
+    # 小智ESP32-S3音响
+    set(BOARD_TYPE "amour-k08")
 endif()
 file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/*.cc
