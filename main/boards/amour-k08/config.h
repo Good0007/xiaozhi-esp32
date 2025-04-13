@@ -30,7 +30,8 @@
 
 #define BUILTIN_LED_GPIO        GPIO_NUM_48
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
-#define TOUCH_BUTTON_GPIO       GPIO_NUM_NC
+// 功能键，双击关闭屏幕，单击打开屏幕
+#define MODEL_BUTTON_GPIO       GPIO_NUM_14
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_9
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_21
 

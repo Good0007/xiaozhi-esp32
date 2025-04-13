@@ -41,6 +41,11 @@ public:
 
     // Add theme switching function
     virtual void SetTheme(const std::string& theme_name) override;
+    // 添加以下方法来获取LCD面板句柄
+    esp_lcd_panel_handle_t GetPanel() {
+        return panel_;
+    }
+    
 };
 
 // RGB LCD显示器

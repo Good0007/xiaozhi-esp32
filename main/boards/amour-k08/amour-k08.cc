@@ -68,8 +68,10 @@ private:
     Button boot_button_;
     Button volume_up_button_;    // 添加为成员变量
     Button volume_down_button_;  // 添加为成员变量
+    Button model_button_;        // 添加为成员变量
     bool volume_up_pressed_ = false;  // 跟踪音量+按钮状态
     bool volume_down_pressed_ = false; // 跟踪音量-按钮状态
+    bool screen_on_ = true;  // 跟踪屏幕状态
     LcdDisplay* display_;
 
     void InitializeSpi() {
@@ -210,6 +212,45 @@ private:
             ESP_LOGI(TAG, "Volume Down Button Released");
             volume_down_pressed_ = false;
         });
+
+
+        model_button_.OnClick([this]() {
+            ESP_LOGI(TAG, "MODEL button clicked");
+            if (!screen_on_) {
+                // 打开屏幕
+                ESP_LOGI(TAG, "Turning screen ON");
+                if (GetBacklight()) {
+                    GetBacklight()->RestoreBrightness();
+                }
+                
+                if (display_) {
+                    esp_lcd_panel_handle_t panel = display_->GetPanel();
+                    if (panel) {
+                        esp_lcd_panel_disp_on_off(panel, true);
+                    }
+                }
+                screen_on_ = true;
+            }
+        });
+
+        model_button_.OnLongPress([this]() {
+            ESP_LOGI(TAG, "MODEL button long press");
+            if (screen_on_) {
+                // 关闭屏幕
+                ESP_LOGI(TAG, "Turning screen OFF");
+                if (GetBacklight()) {
+                    GetBacklight()->SetBrightness(0);
+                }
+                
+                if (display_) {
+                    esp_lcd_panel_handle_t panel = display_->GetPanel();
+                    if (panel) {
+                        esp_lcd_panel_disp_on_off(panel, false);
+                    }
+                }
+                screen_on_ = false;
+            }
+        });
     }
 
     // 物联网初始化，添加对 AI 可见设备
@@ -224,7 +265,8 @@ public:
     AmourK08LCD() :
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
-        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO)
+        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO),
+        model_button_(MODEL_BUTTON_GPIO)
         {
         InitializeSpi();
         InitializeLcdDisplay();
