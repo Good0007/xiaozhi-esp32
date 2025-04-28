@@ -258,6 +258,8 @@ private:
         auto& thing_manager = iot::ThingManager::GetInstance();
         thing_manager.AddThing(iot::CreateThing("Speaker"));
         thing_manager.AddThing(iot::CreateThing("Screen"));
+        //注册RadioPlayer
+        thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
     }
 

@@ -1,8 +1,10 @@
 #include "no_audio_codec.h"
-
+#include <esp_http_client.h>
 #include <esp_log.h>
 #include <cmath>
 #include <cstring>
+#include "minimp3.h"
+#include "minimp3_ex.h"
 
 #define TAG "NoAudioCodec"
 
@@ -391,4 +393,75 @@ int NoAudioCodecSimplexPdm::Read(int16_t* dest, int samples) {
     memcpy(dest, bit16_buffer.data(), samples * sizeof(int16_t));
 
     return samples;
+}
+
+void NoAudioCodec::play_stream(const char* url) {
+    //播放 mp3 音频流
+    if (url == nullptr) {
+        ESP_LOGE(TAG, "URL is null");
+        return;
+    }
+    ESP_LOGI(TAG, "Playing stream from URL: %s", url);
+    // 这里可以添加实际的音频流播放逻辑
+    ESP_LOGI(TAG, "Playing stream from URL: %s", url);
+
+    // 1. 初始化 HTTP 客户端
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = 5000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open HTTP stream");
+        esp_http_client_cleanup(client);
+        return;
+    }
+
+    // 2. 初始化 MP3 解码器
+    mp3dec_t mp3d;
+    mp3dec_init(&mp3d);
+
+    uint8_t net_buf[2048];
+    uint8_t mp3_buf[4096];
+    int mp3_buf_len = 0;
+
+    while (true) {
+        int read_len = esp_http_client_read(client, (char*)net_buf, sizeof(net_buf));
+        if (read_len <= 0) break;
+
+        // 累加到 mp3_buf
+        if (mp3_buf_len + read_len > sizeof(mp3_buf)) {
+            // mp3_buf 溢出，丢弃前面一部分
+            int shift = mp3_buf_len + read_len - sizeof(mp3_buf);
+            memmove(mp3_buf, mp3_buf + shift, mp3_buf_len - shift);
+            mp3_buf_len -= shift;
+        }
+        memcpy(mp3_buf + mp3_buf_len, net_buf, read_len);
+        mp3_buf_len += read_len;
+
+        int offset = 0;
+        while (offset < mp3_buf_len) {
+            mp3dec_frame_info_t info;
+            int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+            int consumed = mp3dec_decode_frame(&mp3d, mp3_buf + offset, mp3_buf_len - offset, pcm, &info);
+            if (info.frame_bytes == 0) break; // 没有完整帧
+            if (consumed > 0 && info.channels > 0 && info.frame_bytes > 0) {
+                // 播放 PCM
+                Write(pcm, consumed);
+            }
+            offset += info.frame_bytes;
+        }
+        // 剩余未解码数据前移
+        if (offset < mp3_buf_len) {
+            memmove(mp3_buf, mp3_buf + offset, mp3_buf_len - offset);
+            mp3_buf_len -= offset;
+        } else {
+            mp3_buf_len = 0;
+        }
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "Stream play finished");
+
 }

@@ -10,7 +10,8 @@ class NoAudioCodec : public AudioCodec {
 private:
     virtual int Write(const int16_t* data, int samples) override;
     virtual int Read(int16_t* dest, int samples) override;
-
+    void play_stream(const char* url) override;
+    
 public:
     virtual ~NoAudioCodec();
 };

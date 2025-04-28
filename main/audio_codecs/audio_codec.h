@@ -37,6 +37,10 @@ public:
     inline bool input_enabled() const { return input_enabled_; }
     inline bool output_enabled() const { return output_enabled_; }
 
+    virtual void play_stream(const char* url) {
+        // ESP_LOGW("AudioCodec", "play_stream not implemented in this codec.");
+    }
+
 protected:
     i2s_chan_handle_t tx_handle_ = nullptr;
     i2s_chan_handle_t rx_handle_ = nullptr;

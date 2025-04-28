@@ -4,7 +4,7 @@
 #include <nvs_flash.h>
 #include <driver/gpio.h>
 #include <esp_event.h>
-
+#include "sd_audio_reader.h"
 #include "application.h"
 #include "system_info.h"
 
@@ -23,6 +23,21 @@ extern "C" void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    SDAudioReader reader;
+    if (!reader.initialize()) {
+        ESP_LOGE("MAIN", "SD card initialization failed");
+        return;
+    }
+
+    reader.listAudioFiles();
+    int count = reader.getAudioFileCount();
+    ESP_LOGI("MAIN", "Found %d audio files:", count);
+
+    const auto& files = reader.getAudioFiles();
+    for (const auto& name : files) {
+        ESP_LOGI("MAIN", "Audio file: %s", name.c_str());
+    }
 
     // Launch the application
     Application::GetInstance().Start();
