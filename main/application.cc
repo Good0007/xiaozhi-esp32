@@ -16,8 +16,18 @@
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 
+#include "audio_codecs/mp3_decoder_wrapper.h"
+#include "http/http_net_stream.h"
+
 #define TAG "Application"
 
+enum class PlayingType {
+    None,
+    Sound,
+    Mp3Stream,
+    LocalAudio
+};
+PlayingType playing_type_ = PlayingType::None;
 
 static const char* const STATE_STRINGS[] = {
     "unknown",
@@ -222,6 +232,13 @@ void Application::DismissAlert() {
 }
 
 void Application::PlaySound(const std::string_view& sound) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (playing_type_ != PlayingType::None) {
+        ESP_LOGW(TAG, "Another audio is playing, ignore PlaySound");
+        return;
+    }
+    playing_type_ = PlayingType::Sound;
+    lock.unlock();
     // Wait for the previous sound to finish
     {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -248,6 +265,149 @@ void Application::PlaySound(const std::string_view& sound) {
         std::lock_guard<std::mutex> lock(mutex_);
         audio_decode_queue_.emplace_back(std::move(opus));
     }
+    lock.lock();
+    playing_type_ = PlayingType::None;
+}
+
+void Application::PlayMp3Stream(const std::string& url) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (playing_type_ != PlayingType::None) {
+        ESP_LOGW(TAG, "Another audio is playing, ignore PlayMp3Stream");
+        return;
+    }
+    playing_type_ = PlayingType::Mp3Stream;
+    lock.unlock();
+    // 切换到 idle，停止语音相关任务
+    SetDeviceState(kDeviceStateIdle);
+
+    // 1. 停止当前音频播放
+    ResetDecoder();
+    ESP_LOGE(TAG, "PlayMp3Stream: %s", url.c_str());
+    // 2. 启动后台任务，拉取网络流并解码
+    background_task_->Schedule([this, url]() {
+        Mp3StreamDecoderWrapper mp3_decoder;
+        std::vector<uint8_t> mp3_buffer;
+        std::vector<int16_t> pcm_buffer;
+
+        // 伪代码：打开网络流
+        auto stream = OpenNetworkStream(url);
+        if (!stream) {
+            ESP_LOGE(TAG, "Failed to open mp3 stream");
+            return;
+        }
+
+        while (true) {
+            // 2.1 读取一段 mp3 数据
+            uint8_t temp[1024];
+            int read_bytes = stream->Read(temp, sizeof(temp));
+            if (read_bytes <= 0) break;
+            mp3_buffer.insert(mp3_buffer.end(), temp, temp + read_bytes);
+
+            // 2.2 尝试解码
+            size_t consumed = 0;
+            while (mp3_decoder.DecodeFrame(mp3_buffer.data() + consumed, mp3_buffer.size() - consumed, pcm_buffer)) {
+                // 2.3 PCM 分帧推送到队列
+                const size_t frame_samples = mp3_decoder.FrameSamples();
+                for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
+                    std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        audio_decode_queue_.emplace_back(std::move(frame));
+                    }
+                    audio_decode_cv_.notify_all();
+                }
+                pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
+                consumed += mp3_decoder.LastFrameBytes();
+            }
+            mp3_buffer.erase(mp3_buffer.begin(), mp3_buffer.begin() + consumed);
+
+            // 可选：检测停止信号
+            if (aborted_) break;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        playing_type_ = PlayingType::None;
+    });
+}
+
+void Application::PlayLocalAudio(const std::string& path) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (playing_type_ != PlayingType::None) {
+        ESP_LOGW(TAG, "Another audio is playing, ignore PlayLocalAudio");
+        return;
+    }
+    playing_type_ = PlayingType::LocalAudio;
+    lock.unlock();
+
+    ResetDecoder();
+    ESP_LOGE(TAG, "PlayLocalAudio: %s", path.c_str());
+    // 判断文件类型
+    bool is_mp3 = path.size() > 4 && path.substr(path.size() - 4) == ".mp3";
+    bool is_wav = path.size() > 4 && path.substr(path.size() - 4) == ".wav";
+
+    background_task_->Schedule([this, path, is_mp3, is_wav]() {
+        if (is_mp3) {
+            Mp3StreamDecoderWrapper mp3_decoder;
+            std::vector<uint8_t> mp3_buffer;
+            std::vector<int16_t> pcm_buffer;
+
+            FILE* file = fopen(path.c_str(), "rb");
+            if (!file) {
+                ESP_LOGE(TAG, "Failed to open mp3 file: %s", path.c_str());
+                return;
+            }
+            while (true) {
+                uint8_t temp[1024];
+                size_t read_bytes = fread(temp, 1, sizeof(temp), file);
+                if (read_bytes == 0) break;
+                mp3_buffer.insert(mp3_buffer.end(), temp, temp + read_bytes);
+
+                size_t consumed = 0;
+                while (mp3_decoder.DecodeFrame(mp3_buffer.data() + consumed, mp3_buffer.size() - consumed, pcm_buffer)) {
+                    const size_t frame_samples = mp3_decoder.FrameSamples();
+                    for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
+                        std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            audio_decode_queue_.emplace_back(std::move(frame));
+                        }
+                        audio_decode_cv_.notify_all();
+                    }
+                    pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
+                    consumed += mp3_decoder.LastFrameBytes();
+                }
+                mp3_buffer.erase(mp3_buffer.begin(), mp3_buffer.begin() + consumed);
+                if (aborted_) break;
+            }
+            fclose(file);
+        } else if (is_wav) {
+            // 简单WAV解码（假设16bit PCM，44字节头）
+            FILE* file = fopen(path.c_str(), "rb");
+            if (!file) {
+                ESP_LOGE(TAG, "Failed to open wav file: %s", path.c_str());
+                return;
+            }
+            uint8_t header[44];
+            fread(header, 1, 44, file); // 跳过WAV头
+            while (true) {
+                int16_t pcm[1024];
+                size_t read_samples = fread(pcm, sizeof(int16_t), 1024, file);
+                if (read_samples == 0) break;
+                std::vector<uint8_t> frame((uint8_t*)pcm, (uint8_t*)(pcm + read_samples));
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    audio_decode_queue_.emplace_back(std::move(frame));
+                }
+                audio_decode_cv_.notify_all();
+                if (aborted_) break;
+            }
+            fclose(file);
+        } else {
+            ESP_LOGE(TAG, "Unsupported audio file: %s", path.c_str());
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        playing_type_ = PlayingType::None;
+    });
 }
 
 void Application::ToggleChatState() {
@@ -658,21 +818,25 @@ void Application::OnAudioOutput() {
         return;
     }
 
-    auto opus = std::move(audio_decode_queue_.front());
+    auto frame = std::move(audio_decode_queue_.front());
     audio_decode_queue_.pop_front();
     lock.unlock();
     audio_decode_cv_.notify_all();
 
     busy_decoding_audio_ = true;
-    background_task_->Schedule([this, codec, opus = std::move(opus)]() mutable {
+    background_task_->Schedule([this, codec, frame = std::move(frame)]() mutable {
         busy_decoding_audio_ = false;
         if (aborted_) {
             return;
         }
 
         std::vector<int16_t> pcm;
-        if (!opus_decoder_->Decode(std::move(opus), pcm)) {
-            return;
+        if (is_pcm_streaming_) {
+            pcm.assign((int16_t*)frame.data(), (int16_t*)(frame.data() + frame.size()));
+        } else {
+            if (!opus_decoder_->Decode(std::move(frame), pcm)) {
+                return;
+            }
         }
         // Resample if the sample rate is different
         if (opus_decoder_->sample_rate() != codec->output_sample_rate()) {
@@ -862,6 +1026,9 @@ void Application::ResetDecoder() {
     audio_decode_cv_.notify_all();
     last_output_time_ = std::chrono::steady_clock::now();
     
+    // Reset the playing type
+    playing_type_ = PlayingType::None;
+
     auto codec = Board::GetInstance().GetAudioCodec();
     codec->EnableOutput(true);
 }

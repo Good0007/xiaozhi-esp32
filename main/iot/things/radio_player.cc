@@ -3,6 +3,7 @@
 #include "audio_codec.h"
 #include "net_radio.h" 
 #include <esp_log.h>
+#include "application.h"
 
 #define TAG "RadioPlayer"
 
@@ -37,9 +38,10 @@ public:
                 //ESP_LOGI(TAG, "根据名称模糊查找频道id: %s", channels.c_str());
                 uint32_t fm_id = radio_.searchByNameId(name);
                 ESP_LOGI(TAG, "播放指定频道: %" PRIu32, fm_id);
-                auto codec = Board::GetInstance().GetAudioCodec();
+                //auto codec = Board::GetInstance().GetAudioCodec();
+                auto& app = Application::GetInstance();
                 last_url_ = radio_.getFmUrlById(fm_id); // 保存到成员变量
-                codec->play_stream(last_url_.c_str());
+                app.PlayMp3Stream(last_url_);
                 //return true;
                 //return channels;
         });

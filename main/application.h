@@ -73,10 +73,15 @@ public:
     void WakeWordInvoke(const std::string& wake_word);
     void PlaySound(const std::string_view& sound);
     bool CanEnterSleepMode();
-
+    void PlayMp3Stream(const std::string& url);
+    void PlayLocalAudio(const std::string& path);
+    
 private:
     Application();
     ~Application();
+
+    //是否原始pcm
+    bool is_pcm_streaming_ = false;
 
 #if CONFIG_USE_WAKE_WORD_DETECT
     WakeWordDetect wake_word_detect_;
