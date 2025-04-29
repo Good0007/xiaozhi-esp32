@@ -29,7 +29,7 @@ bool Mp3StreamDecoderWrapper::DecodeFrame(const uint8_t* data, size_t size, std:
         sample_rate_ = info.hz;
         channels_ = info.channels;
         frame_samples_ = samples;
-        pcm_out.insert(pcm_out.end(), pcm, pcm + samples * channels_);
+        pcm_out.insert(pcm_out.end(), pcm, pcm + samples); // 修正
         return true;
     } else {
         last_frame_bytes_ = (info.frame_bytes > 0) ? info.frame_bytes : 0;

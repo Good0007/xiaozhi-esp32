@@ -276,7 +276,7 @@ private:
         //注册RadioPlayer
         thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
         //注册Switcher
-        thing_manager.AddThing(iot::CreateThing("Switcher"));
+        //thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
         // 启动图片循环显示任务
         //StartImageSlideshow();

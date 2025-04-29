@@ -12,7 +12,7 @@ class Switcher : public Thing {
 public:
     Switcher() : Thing("Switcher", "系统切换") {
         // 定义设备可以被远程执行的指令
-        methods_.AddMethod("SwitchToRadio", "切换到网络收音机", ParameterList({
+        methods_.AddMethod("SwitchToRadio", "切换系统（必须当用户明确说切换到：收音机/电台模式）", ParameterList({
             Parameter("state", "1", kValueTypeNumber, true)
         }), [this](const ParameterList& parameters) {
             auto display_ = Board::GetInstance().GetDisplay();

@@ -14,18 +14,25 @@ class RadioPlayer : public Thing {
 public:
     RadioPlayer() : Thing("RadioPlayer", "这是一个网络收音机，可以获取频道，播放指定频道") {
         // 获取全部频道
-        //properties_.AddStringProperty("allChannels", "获取全部频道", [this]() -> std::string {
-        //    ESP_LOGI(TAG, "获取全部频道: %s", radio_.getAllAsString().c_str());
-        //    return radio_.getAllAsString();
-        //});
+        properties_.AddStringProperty("state", "状态：0 离线 1 可用", [this]() -> std::string {
+            ESP_LOGI(TAG, "获取状态");
+            return "1";
+        });
 
        // 按 tag 分类获取频道
         methods_.AddMethod("getChannelsByTag", "按类型获取频道", ParameterList({ 
-            Parameter("tag", "频道类型（0:音乐台 1:新闻台 2:综合台）", kValueTypeNumber, true )
+            Parameter("tag", "频道类型（0:音乐台 1:新闻台 2:综合台 3:全部）", kValueTypeNumber, true )
         }),[this](const ParameterList& parameters) -> std::string  {
+                std::string channels = "";
                 int tag = parameters["tag"].number();
-                std::string channels = radio_.getFmListByTagAsString(tag);
-                ESP_LOGI(TAG, "按类型获取频道: %s", channels.c_str());
+                if (tag == 3) {
+                    // 获取全部频道
+                    channels = radio_.getAllAsString();
+                } else {
+                    // 获取指定类型的频道
+                    channels = radio_.getFmListByTagAsString(tag);
+                }
+                ESP_LOGI(TAG, "按类型获取频道: %d = %s",tag, channels.c_str());
                 return channels;
         });
 

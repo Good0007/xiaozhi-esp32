@@ -275,14 +275,15 @@ void Application::PlayMp3Stream(const std::string& url) {
         ESP_LOGW(TAG, "Another audio is playing, ignore PlayMp3Stream");
         return;
     }
-    playing_type_ = PlayingType::Mp3Stream;
     lock.unlock();
     // 切换到 idle，停止语音相关任务
-    SetDeviceState(kDeviceStateIdle);
+    //SetDeviceState(kDeviceStateIdle);
 
     // 1. 停止当前音频播放
     ResetDecoder();
-    ESP_LOGE(TAG, "PlayMp3Stream: %s", url.c_str());
+    playing_type_ = PlayingType::Mp3Stream;
+
+    ESP_LOGI(TAG, "PlayMp3Stream: %s", url.c_str());
     // 2. 启动后台任务，拉取网络流并解码
     background_task_->Schedule([this, url]() {
         Mp3StreamDecoderWrapper mp3_decoder;
@@ -300,14 +301,80 @@ void Application::PlayMp3Stream(const std::string& url) {
             // 2.1 读取一段 mp3 数据
             uint8_t temp[1024];
             int read_bytes = stream->Read(temp, sizeof(temp));
+            auto total = 0;
+            while (read_bytes == 0 && total++ < 10) {
+                //延时10ms 然后再读取
+                vTaskDelay(pdMS_TO_TICKS(10));
+                read_bytes = stream->Read(temp, sizeof(temp));
+                if (read_bytes > 0) {
+                    ESP_LOGE(TAG, "While Read %d bytes from stream", read_bytes);
+                    break;
+                }
+            }
             if (read_bytes <= 0) break;
             mp3_buffer.insert(mp3_buffer.end(), temp, temp + read_bytes);
+            // 累计到一定长度再解码
+            if (mp3_buffer.size() < 8192) continue;
 
             // 2.2 尝试解码
             size_t consumed = 0;
+            int continuous_decode_attempts = 0;
+            const int MAX_ATTEMPTS_ON_SAME_DATA = 5;
+            
+            // 尝试解码第一帧
+            bool first_decode_result = mp3_decoder.DecodeFrame(mp3_buffer.data(), mp3_buffer.size(), pcm_buffer);
+            size_t first_frame_bytes = mp3_decoder.LastFrameBytes();
+            ESP_LOGI(TAG, "First decode attempt: result=%d, frame_bytes=%zu", first_decode_result ? 1 : 0, first_frame_bytes);
+
+            // 无论解码成功还是失败，只要识别到帧，就处理并跳过这些数据
+            if (first_frame_bytes > 0) {
+                if (first_decode_result) {
+                    // 第一帧解码成功，处理PCM数据
+                    const size_t frame_samples = mp3_decoder.FrameSamples();
+                    ESP_LOGI(TAG, "Decoded first frame successfully: samples=%zu, bytes=%zu", frame_samples, first_frame_bytes);
+                    
+                    // PCM数据处理
+                    for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
+                        std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            audio_decode_queue_.emplace_back(std::move(frame));
+                        }
+                        audio_decode_cv_.notify_all();
+                    }
+                    
+                    pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
+                } else {
+                    ESP_LOGW(TAG, "Frame identified but decode failed, skipping %zu bytes", first_frame_bytes);
+                }
+                consumed += first_frame_bytes;  // 关键修复：无论成功失败都更新已消费字节数
+            }
+
             while (mp3_decoder.DecodeFrame(mp3_buffer.data() + consumed, mp3_buffer.size() - consumed, pcm_buffer)) {
-                // 2.3 PCM 分帧推送到队列
+                size_t frame_bytes = mp3_decoder.LastFrameBytes();
+                
+                // 检测卡住状态并处理
+                if (frame_bytes == 0) {
+                    continuous_decode_attempts++;
+                    ESP_LOGW(TAG, "MP3 decoder didn't consume any bytes (attempt %d/%d)", 
+                             continuous_decode_attempts, MAX_ATTEMPTS_ON_SAME_DATA);
+                    
+                    if (continuous_decode_attempts >= MAX_ATTEMPTS_ON_SAME_DATA) {
+                        ESP_LOGE(TAG, "MP3 decoder stuck, skipping one byte to continue");
+                        consumed += 1; // 强制前进一个字节
+                        continuous_decode_attempts = 0;
+                        break; // 退出本次解码循环
+                    }
+                    continue; // 再试一次
+                }
+                
+                // 成功解码，重置尝试计数
+                continuous_decode_attempts = 0;
+                
                 const size_t frame_samples = mp3_decoder.FrameSamples();
+                ESP_LOGI(TAG, "Decoded frame size: %zu, consumed bytes: %zu", frame_samples, frame_bytes);
+                
+                // PCM数据处理...
                 for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
                     std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
                     {
@@ -316,14 +383,17 @@ void Application::PlayMp3Stream(const std::string& url) {
                     }
                     audio_decode_cv_.notify_all();
                 }
+                
                 pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
-                consumed += mp3_decoder.LastFrameBytes();
+                consumed += frame_bytes;
             }
+            
             mp3_buffer.erase(mp3_buffer.begin(), mp3_buffer.begin() + consumed);
-
             // 可选：检测停止信号
             if (aborted_) break;
         }
+        //打印结束
+        ESP_LOGI(TAG, "Mp3 stream ended");
         std::lock_guard<std::mutex> lock(mutex_);
         playing_type_ = PlayingType::None;
     });
@@ -339,7 +409,7 @@ void Application::PlayLocalAudio(const std::string& path) {
     lock.unlock();
 
     ResetDecoder();
-    ESP_LOGE(TAG, "PlayLocalAudio: %s", path.c_str());
+    ESP_LOGI(TAG, "PlayLocalAudio: %s", path.c_str());
     // 判断文件类型
     bool is_mp3 = path.size() > 4 && path.substr(path.size() - 4) == ".mp3";
     bool is_wav = path.size() > 4 && path.substr(path.size() - 4) == ".wav";
@@ -803,7 +873,7 @@ void Application::OnAudioOutput() {
     std::unique_lock<std::mutex> lock(mutex_);
     if (audio_decode_queue_.empty()) {
         // Disable the output if there is no audio data for a long time
-        if (device_state_ == kDeviceStateIdle) {
+        if (device_state_ == kDeviceStateIdle && playing_type_ == PlayingType::None) {
             auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time_).count();
             if (duration > max_silence_seconds) {
                 codec->EnableOutput(false);
@@ -1062,6 +1132,16 @@ void Application::Reboot() {
 }
 
 void Application::WakeWordInvoke(const std::string& wake_word) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (playing_type_ == PlayingType::Mp3Stream) {
+        // 打断mp3播放
+        aborted_ = true; // 通知后台任务退出
+        background_task_->WaitForCompletion();
+        ResetDecoder();  // 清空队列，重置状态
+        ESP_LOGI(TAG, "Mp3 stream interrupted by wake word");
+    }
+    lock.unlock();
+
     if (device_state_ == kDeviceStateIdle) {
         ToggleChatState();
         Schedule([this, wake_word]() {
