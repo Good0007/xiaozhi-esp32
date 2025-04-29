@@ -16,6 +16,18 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <driver/spi_common.h>
+#include "ota_utils.h"
+
+#include "images/doufu/output_0001.h"
+#include "images/doufu/output_0002.h"
+#include "images/doufu/output_0003.h"
+#include "images/doufu/output_0004.h"
+#include "images/doufu/output_0005.h"
+#include "images/doufu/output_0006.h"
+#include "images/doufu/output_0007.h"
+#include "images/doufu/output_0008.h"
+#include "images/doufu/output_0009.h"
+#include "images/doufu/output_0010.h"
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
@@ -74,43 +86,8 @@ private:
     bool volume_down_pressed_ = false; // 跟踪音量-按钮状态
     bool screen_on_ = true;  // 跟踪屏幕状态
     LcdDisplay* display_;
+    TaskHandle_t image_task_handle_ = nullptr; // 图片显示任务句柄
 
-    void switch_to_other_app() {
-        const esp_partition_t *running = esp_ota_get_running_partition();
-        const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
-        
-        if (target != NULL) {
-            ESP_LOGI(TAG, "当前运行分区: %s (0x%lx)", running->label, running->address);
-            ESP_LOGI(TAG, "切换至分区: %s (0x%lx)", target->label, target->address);
-            
-            //if (display_) {
-                char message[100];
-                //snprintf(message, sizeof(message), "切换至分区: %s", target->label);
-                //display_->SetChatMessage("system", message);
-                //display_->ShowNotification(message, 3000);
-            //}
-            
-            // 等待显示完成
-            //vTaskDelay(pdMS_TO_TICKS(2000));
-            
-            esp_err_t err = esp_ota_set_boot_partition(target);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "分区切换成功，准备重启...");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                esp_restart();
-            } else {
-                ESP_LOGE(TAG, "设置启动分区失败: %s", esp_err_to_name(err));
-                if (display_) {
-                    display_->SetChatMessage("system", "系统切换失败!");
-                }
-            }
-        } else {
-            ESP_LOGE(TAG, "未找到可切换的分区");
-            if (display_) {
-                display_->SetChatMessage("system", "未找到分区!");
-            }
-        }
-    }
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -287,10 +264,7 @@ private:
 
         model_button_.OnLongPress([this]() {
             ESP_LOGI(TAG, "MODEL button long press");
-            if (display_) {
-                display_->SetChatMessage("system", "即将切到网络收音机...");
-            }
-            switch_to_other_app();
+            OtaUtils::SwitchToOtherApp(display_);
         });
     }
 
@@ -300,9 +274,148 @@ private:
         thing_manager.AddThing(iot::CreateThing("Speaker"));
         thing_manager.AddThing(iot::CreateThing("Screen"));
         //注册RadioPlayer
-        thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        //thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        //注册Switcher
+        thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
+        // 启动图片循环显示任务
+        //StartImageSlideshow();
     }
+
+    // 启动图片循环显示任务
+    void StartImageSlideshow() {
+        xTaskCreate(ImageSlideshowTask, "img_slideshow", 4096, this, 3, &image_task_handle_);
+        ESP_LOGI(TAG, "图片循环显示任务已启动");
+    }
+    
+    // 图片循环显示任务函数
+    static void ImageSlideshowTask(void* arg) {
+            AmourK08LCD* board = static_cast<AmourK08LCD*>(arg);
+            Display* display = board->GetDisplay();
+            
+            if (!display) {
+                ESP_LOGE(TAG, "无法获取显示设备");
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // 获取AudioProcessor实例的事件组 - 从application.h中直接获取
+            auto& app = Application::GetInstance();
+            // 这里使用Application中可用的方法来判断音频状态
+            // 根据编译错误修改为可用的方法
+            
+            // 创建画布（如果不存在）
+            if (!display->HasCanvas()) {
+                display->CreateCanvas();
+            }
+            
+            // 设置图片显示参数
+            int imgWidth = 320;
+            int imgHeight = 240;
+            int x = 0;
+            int y = 0;
+            
+            // 设置图片数组
+            const uint8_t* imageArray[] = {
+                gImage_output_0001,
+                gImage_output_0002,
+                gImage_output_0003,
+                gImage_output_0004,
+                gImage_output_0005,
+                gImage_output_0006,
+                gImage_output_0007,
+                gImage_output_0008,
+                gImage_output_0009,
+                gImage_output_0010,
+                gImage_output_0009,
+                gImage_output_0008,
+                gImage_output_0007,
+                gImage_output_0006,
+                gImage_output_0005,
+                gImage_output_0004,
+                gImage_output_0003,
+                gImage_output_0002,
+                gImage_output_0001
+            };
+            const int totalImages = sizeof(imageArray) / sizeof(imageArray[0]);
+            
+            // 创建临时缓冲区用于字节序转换
+            uint16_t* convertedData = new uint16_t[imgWidth * imgHeight];
+            if (!convertedData) {
+                ESP_LOGE(TAG, "无法分配内存进行图像转换");
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // 先显示第一张图片
+            int currentIndex = 0;
+            const uint8_t* currentImage = imageArray[currentIndex];
+            
+            // 转换并显示第一张图片
+            for (int i = 0; i < imgWidth * imgHeight; i++) {
+                uint16_t pixel = ((uint16_t*)currentImage)[i];
+                convertedData[i] = ((pixel & 0xFF) << 8) | ((pixel & 0xFF00) >> 8);
+            }
+            display->DrawImageOnCanvas(x, y, imgWidth, imgHeight, (const uint8_t*)convertedData);
+            ESP_LOGI(TAG, "初始显示图片");
+            
+            // 持续监控和处理图片显示
+            TickType_t lastUpdateTime = xTaskGetTickCount();
+            const TickType_t cycleInterval = pdMS_TO_TICKS(60); // 图片切换间隔60毫秒
+            
+            // 定义用于判断是否正在播放音频的变量
+            bool isAudioPlaying = false;
+            bool wasAudioPlaying = false;
+            
+            while (true) {
+                // 检查是否正在播放音频 - 使用应用程序状态判断
+                isAudioPlaying = (app.GetDeviceState() == kDeviceStateSpeaking);
+                
+                TickType_t currentTime = xTaskGetTickCount();
+                
+                // 如果正在播放音频且时间到了切换间隔
+                if (isAudioPlaying && (currentTime - lastUpdateTime >= cycleInterval)) {
+                    // 更新索引到下一张图片
+                    currentIndex = (currentIndex + 1) % totalImages;
+                    currentImage = imageArray[currentIndex];
+                    
+                    // 转换并显示新图片
+                    for (int i = 0; i < imgWidth * imgHeight; i++) {
+                        uint16_t pixel = ((uint16_t*)currentImage)[i];
+                        convertedData[i] = ((pixel & 0xFF) << 8) | ((pixel & 0xFF00) >> 8);
+                    }
+                    display->DrawImageOnCanvas(x, y, imgWidth, imgHeight, (const uint8_t*)convertedData);
+                    //ESP_LOGI(TAG, "循环显示图片");
+                    
+                    // 更新上次更新时间
+                    lastUpdateTime = currentTime;
+                }
+                // 如果不在播放音频但上一次检查时在播放，或者当前不在第一张图片
+                else if ((!isAudioPlaying && wasAudioPlaying) || (!isAudioPlaying && currentIndex != 0)) {
+                    // 切换回第一张图片
+                    currentIndex = 0;
+                    currentImage = imageArray[currentIndex];
+                    
+                    // 转换并显示第一张图片
+                    for (int i = 0; i < imgWidth * imgHeight; i++) {
+                        uint16_t pixel = ((uint16_t*)currentImage)[i];
+                        convertedData[i] = ((pixel & 0xFF) << 8) | ((pixel & 0xFF00) >> 8);
+                    }
+                    display->DrawImageOnCanvas(x, y, imgWidth, imgHeight, (const uint8_t*)convertedData);
+                    ESP_LOGI(TAG, "返回显示初始图片");
+                }
+                
+                // 更新上一次音频播放状态
+                wasAudioPlaying = isAudioPlaying;
+                
+                // 短暂延时，避免CPU占用过高
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            
+            // 释放资源（实际上不会执行到这里，除非任务被外部终止）
+            delete[] convertedData;
+            vTaskDelete(NULL);
+        }
 
 public:
     AmourK08LCD() :
@@ -318,7 +431,8 @@ public:
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
-        
+        // 启动图片循环显示任务
+        //StartImageSlideshow();
     }
 
     virtual Led* GetLed() override {
