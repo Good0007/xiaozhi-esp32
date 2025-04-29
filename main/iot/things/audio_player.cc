@@ -2,16 +2,18 @@
 #include "board.h"
 #include "sd_audio_reader.h"
 #include <esp_log.h>
+#include "audio_codec.h"
 
-#define TAG "AadioPlayer"
+#define TAG "AudioPlayer"
 
 namespace iot {
 
 // 这里仅定义 AadioPlayer 的属性和方法，不包含具体的实现
-class AadioPlayer : public Thing {
+class AudioPlayer : public Thing {
 public:
-    RadioPlayer() : Thing("AadioPlayer", "这是一个播放器，可以播放本地音乐") {
+    AudioPlayer() : Thing("AudioPlayer", "这是一个mp3播放器") {
         properties_.AddStringProperty("allAudios", "获取全部mp3文件列表", [this]() -> std::string {
+            ESP_LOGI(TAG, "获取音乐列表: %s", audio_.getAllAsString().c_str());
             return audio_.getAllAsString();
         });
 
@@ -21,7 +23,7 @@ public:
         }), [this](const ParameterList& parameters) {
                 std::string audioName = parameters["audioName"].string();
                 std::string url = audio_.getAudioFilePath(audioName);
-                ESP_LOGI(TAG, "播放指定音乐: %s" url);
+                ESP_LOGI(TAG, "播放指定音乐: %s", url.c_str()); // 修正这里
                 auto codec = Board::GetInstance().GetAudioCodec();
                 codec->play_stream(url.c_str());
                 return true;
@@ -35,4 +37,4 @@ private:
 
 } // namespace iot
 
-DECLARE_THING(RadioPlayer);
+DECLARE_THING(AudioPlayer);

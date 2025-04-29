@@ -32,21 +32,11 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    SDAudioReader reader;
-    if (!reader.initialize()) {
-        ESP_LOGE("MAIN", "SD card initialization failed");
-        return;
-    }
-
-    reader.listAudioFiles();
-    int count = reader.getAudioFileCount();
-    ESP_LOGI("MAIN", "Found %d audio files:", count);
-
-    const auto& files = reader.getAudioFiles();
-    for (const auto& name : files) {
-        ESP_LOGI("MAIN", "Audio file: %s", name.c_str());
-    }
-
+    //SDAudioReader reader;
+    //if (!reader.initialize()) {
+    //    ESP_LOGE("MAIN", "SD card initialization failed");
+    //    return;
+    //}
     // Launch the application
     Application::GetInstance().Start();
 }

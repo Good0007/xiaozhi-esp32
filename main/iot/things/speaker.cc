@@ -15,6 +15,7 @@ public:
         // 定义设备的属性
         properties_.AddNumberProperty("volume", "当前音量值", [this]() -> int {
             auto codec = Board::GetInstance().GetAudioCodec();
+            ESP_LOGI(TAG, "获取音量值: %d", codec->output_volume());
             return codec->output_volume();
         });
 
