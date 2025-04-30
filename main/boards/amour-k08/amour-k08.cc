@@ -88,6 +88,35 @@ private:
     LcdDisplay* display_;
     TaskHandle_t image_task_handle_ = nullptr; // 图片显示任务句柄
 
+    void ToggleScreenOnOff() {
+        if (!screen_on_) {
+            // 打开屏幕
+            ESP_LOGI(TAG, "Turning screen ON");
+            if (GetBacklight()) {
+                GetBacklight()->RestoreBrightness();
+            }
+            if (display_) {
+                esp_lcd_panel_handle_t panel = display_->GetPanel();
+                if (panel) {
+                    esp_lcd_panel_disp_on_off(panel, true);
+                }
+            }
+            screen_on_ = true;
+        } else {
+            // 关闭屏幕
+            ESP_LOGI(TAG, "Turning screen OFF");
+            if (GetBacklight()) {
+                GetBacklight()->SetBrightness(0);
+            }
+            if (display_) {
+                esp_lcd_panel_handle_t panel = display_->GetPanel();
+                if (panel) {
+                    esp_lcd_panel_disp_on_off(panel, false);
+                }
+            }
+            screen_on_ = false;
+        }
+    }
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -156,20 +185,32 @@ private:
                                     });
     }
 
-
  
     void InitializeButtons() {
-        boot_button_.OnClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-                ResetWifiConfiguration();
-            }
-            app.ToggleChatState();
-        });
-        boot_button_.OnPressDown([this]()
+        if (MODEL_BUTTON_FUNC == 1) {
+            model_button_.OnClick([this]() {
+                auto& app = Application::GetInstance();
+                if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
+                    ResetWifiConfiguration();
+                }
+                app.ToggleChatState();
+            });
+            model_button_.OnPressDown([this]()
             { Application::GetInstance().StartListening(); });
-        boot_button_.OnPressUp([this]()
+            model_button_.OnPressUp([this]()
             { Application::GetInstance().StopListening(); });
+        } else {
+            model_button_.OnClick([this]() {
+                ESP_LOGI(TAG, "MODEL button clicked");
+                //屏幕开关
+                ToggleScreenOnOff();
+            });
+        }
+
+        model_button_.OnLongPress([this]() {
+            ESP_LOGI(TAG, "MODEL button long press");
+            OtaUtils::SwitchToOtherApp(display_);
+        });
 
         // 音量增加按钮
         volume_up_button_.OnPressDown([this]() {
@@ -197,6 +238,11 @@ private:
         volume_up_button_.OnPressUp([this]() {
             ESP_LOGI(TAG, "Volume Up Button Released");
             volume_up_pressed_ = false;
+        });
+
+        volume_up_button_.OnLongPress([this]() {
+           //屏幕开关
+           ToggleScreenOnOff();
         });
 
         // 音量减少按钮
@@ -228,43 +274,8 @@ private:
             volume_down_pressed_ = false;
         });
 
-
-        model_button_.OnClick([this]() {
-            ESP_LOGI(TAG, "MODEL button clicked");
-            if (!screen_on_) {
-                // 打开屏幕
-                ESP_LOGI(TAG, "Turning screen ON");
-                if (GetBacklight()) {
-                    GetBacklight()->RestoreBrightness();
-                }
-                
-                if (display_) {
-                    esp_lcd_panel_handle_t panel = display_->GetPanel();
-                    if (panel) {
-                        esp_lcd_panel_disp_on_off(panel, true);
-                    }
-                }
-                screen_on_ = true;
-            } else {
-                // 关闭屏幕
-                ESP_LOGI(TAG, "Turning screen OFF");
-                if (GetBacklight()) {
-                    GetBacklight()->SetBrightness(0);
-                }
-                
-                if (display_) {
-                    esp_lcd_panel_handle_t panel = display_->GetPanel();
-                    if (panel) {
-                        esp_lcd_panel_disp_on_off(panel, false);
-                    }
-                }
-                screen_on_ = false;
-            }
-        });
-
-        model_button_.OnLongPress([this]() {
-            ESP_LOGI(TAG, "MODEL button long press");
-            OtaUtils::SwitchToOtherApp(display_);
+        volume_down_button_.OnLongPress([this]() {
+            ESP_LOGI(TAG, "Volume Down Button OnLongPress");
         });
     }
 
@@ -273,10 +284,10 @@ private:
         auto& thing_manager = iot::ThingManager::GetInstance();
         thing_manager.AddThing(iot::CreateThing("Speaker"));
         thing_manager.AddThing(iot::CreateThing("Screen"));
-        //注册RadioPlayer
-        thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        //注册RadioPlayer TODO
+        //thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
         //注册Switcher
-        //thing_manager.AddThing(iot::CreateThing("Switcher"));
+        thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
         // 启动图片循环显示任务
         //StartImageSlideshow();
