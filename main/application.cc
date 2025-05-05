@@ -10,6 +10,12 @@
 #include "iot/thing_manager.h"
 #include "assets/lang_config.h"
 
+#if CONFIG_USE_AUDIO_PROCESSOR
+#include "afe_audio_processor.h"
+#else
+#include "dummy_audio_processor.h"
+#endif
+
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
@@ -47,6 +53,12 @@ static const char* const STATE_STRINGS[] = {
 Application::Application() {
     event_group_ = xEventGroupCreate();
     background_task_ = new BackgroundTask(4096 * 8);
+
+#if CONFIG_USE_AUDIO_PROCESSOR
+    audio_processor_ = std::make_unique<AfeAudioProcessor>();
+#else
+    audio_processor_ = std::make_unique<DummyAudioProcessor>();
+#endif
 
     esp_timer_create_args_t clock_timer_args = {
         .callback = [](void* arg) {
@@ -89,6 +101,11 @@ void Application::CheckNewVersion() {
                 ESP_LOGE(TAG, "Too many retries, exit version check");
                 return;
             }
+
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, retry_delay, ota_.GetCheckVersionUrl().c_str());
+            Alert(Lang::Strings::ERROR, buffer, "sad", Lang::Sounds::P3_EXCLAMATION);
+
             ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)", retry_delay, retry_count, MAX_RETRY);
             for (int i = 0; i < retry_delay; i++) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
@@ -258,13 +275,13 @@ void Application::PlaySound(const std::string_view& sound) {
         p += sizeof(BinaryProtocol3);
 
         auto payload_size = ntohs(p3->payload_size);
-        std::vector<uint8_t> opus;
-        opus.resize(payload_size);
-        memcpy(opus.data(), p3->payload, payload_size);
+        AudioStreamPacket packet;
+        packet.payload.resize(payload_size);
+        memcpy(packet.payload.data(), p3->payload, payload_size);
         p += payload_size;
 
         std::lock_guard<std::mutex> lock(mutex_);
-        audio_decode_queue_.emplace_back(std::move(opus));
+        audio_decode_queue_.emplace_back(std::move(packet));
     }
     lock.lock();
     playing_type_ = PlayingType::None;
@@ -288,7 +305,7 @@ void Application::PlayMp3Stream(const std::string& url) {
     // 2. 启动后台任务，拉取网络流并解码
     background_task_->Schedule([this, url]() {
         Mp3StreamDecoderWrapper mp3_decoder;
-        RingBuffer ring_buffer(32 * 1024); // 32KB环形缓冲区
+        RingBuffer ring_buffer(16 * 1024); // 32KB环形缓冲区
         std::vector<int16_t> pcm_buffer;
 
         // 伪代码：打开网络流
@@ -327,9 +344,11 @@ void Application::PlayMp3Stream(const std::string& url) {
                     const size_t frame_samples = mp3_decoder.FrameSamples();
                     for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
                         std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
+                        AudioStreamPacket audio_packet;
+                        audio_packet.payload = std::move(frame);
                         {
                             std::lock_guard<std::mutex> lock(mutex_);
-                            audio_decode_queue_.emplace_back(std::move(frame));
+                            audio_decode_queue_.emplace_back(std::move(audio_packet));
                         }
                         audio_decode_cv_.notify_all();
                     }
@@ -368,84 +387,6 @@ void Application::PlayMp3Stream(const std::string& url) {
 }
 
 void Application::PlayLocalAudio(const std::string& path) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    if (playing_type_ != PlayingType::None) {
-        ESP_LOGW(TAG, "Another audio is playing, ignore PlayLocalAudio");
-        return;
-    }
-    playing_type_ = PlayingType::LocalAudio;
-    lock.unlock();
-
-    ResetDecoder();
-    ESP_LOGI(TAG, "PlayLocalAudio: %s", path.c_str());
-    // 判断文件类型
-    bool is_mp3 = path.size() > 4 && path.substr(path.size() - 4) == ".mp3";
-    bool is_wav = path.size() > 4 && path.substr(path.size() - 4) == ".wav";
-
-    background_task_->Schedule([this, path, is_mp3, is_wav]() {
-        if (is_mp3) {
-            Mp3StreamDecoderWrapper mp3_decoder;
-            std::vector<uint8_t> mp3_buffer;
-            std::vector<int16_t> pcm_buffer;
-
-            FILE* file = fopen(path.c_str(), "rb");
-            if (!file) {
-                ESP_LOGE(TAG, "Failed to open mp3 file: %s", path.c_str());
-                return;
-            }
-            while (true) {
-                uint8_t temp[1024];
-                size_t read_bytes = fread(temp, 1, sizeof(temp), file);
-                if (read_bytes == 0) break;
-                mp3_buffer.insert(mp3_buffer.end(), temp, temp + read_bytes);
-
-                size_t consumed = 0;
-                while (mp3_decoder.DecodeFrame(mp3_buffer.data() + consumed, mp3_buffer.size() - consumed, pcm_buffer)) {
-                    const size_t frame_samples = mp3_decoder.FrameSamples();
-                    for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
-                        std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
-                        {
-                            std::lock_guard<std::mutex> lock(mutex_);
-                            audio_decode_queue_.emplace_back(std::move(frame));
-                        }
-                        audio_decode_cv_.notify_all();
-                    }
-                    pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
-                    consumed += mp3_decoder.LastFrameBytes();
-                }
-                mp3_buffer.erase(mp3_buffer.begin(), mp3_buffer.begin() + consumed);
-                if (aborted_) break;
-            }
-            fclose(file);
-        } else if (is_wav) {
-            // 简单WAV解码（假设16bit PCM，44字节头）
-            FILE* file = fopen(path.c_str(), "rb");
-            if (!file) {
-                ESP_LOGE(TAG, "Failed to open wav file: %s", path.c_str());
-                return;
-            }
-            uint8_t header[44];
-            fread(header, 1, 44, file); // 跳过WAV头
-            while (true) {
-                int16_t pcm[1024];
-                size_t read_samples = fread(pcm, sizeof(int16_t), 1024, file);
-                if (read_samples == 0) break;
-                std::vector<uint8_t> frame((uint8_t*)pcm, (uint8_t*)(pcm + read_samples));
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    audio_decode_queue_.emplace_back(std::move(frame));
-                }
-                audio_decode_cv_.notify_all();
-                if (aborted_) break;
-            }
-            fclose(file);
-        } else {
-            ESP_LOGE(TAG, "Unsupported audio file: %s", path.c_str());
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        playing_type_ = PlayingType::None;
-    });
 }
 
 void Application::ToggleChatState() {
@@ -570,20 +511,25 @@ void Application::Start() {
 
     // Initialize the protocol
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
-#ifdef CONFIG_CONNECTION_TYPE_WEBSOCKET
-    protocol_ = std::make_unique<WebsocketProtocol>();
-#else
-    protocol_ = std::make_unique<MqttProtocol>();
-#endif
+
+    if (ota_.HasMqttConfig()) {
+        protocol_ = std::make_unique<MqttProtocol>();
+    } else if (ota_.HasWebsocketConfig()) {
+        protocol_ = std::make_unique<WebsocketProtocol>();
+    } else {
+        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+        protocol_ = std::make_unique<MqttProtocol>();
+    }
+
     protocol_->OnNetworkError([this](const std::string& message) {
         SetDeviceState(kDeviceStateIdle);
         Alert(Lang::Strings::ERROR, message.c_str(), "sad", Lang::Sounds::P3_EXCLAMATION);
     });
-    protocol_->OnIncomingAudio([this](std::vector<uint8_t>&& data) {
-        const int max_packets_in_queue = 300 / OPUS_FRAME_DURATION_MS;
+    protocol_->OnIncomingAudio([this](AudioStreamPacket&& packet) {
+        const int max_packets_in_queue = 600 / OPUS_FRAME_DURATION_MS;
         std::lock_guard<std::mutex> lock(mutex_);
         if (audio_decode_queue_.size() < max_packets_in_queue) {
-            audio_decode_queue_.emplace_back(std::move(data));
+            audio_decode_queue_.emplace_back(std::move(packet));
         }
     });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -688,23 +634,26 @@ void Application::Start() {
             }
         }
     });
-    protocol_->Start();
+    bool protocol_started = protocol_->Start();
 
-#if CONFIG_USE_AUDIO_PROCESSOR
-    audio_processor_.Initialize(codec, realtime_chat_enabled_);
-    audio_processor_.OnOutput([this](std::vector<int16_t>&& data) {
+    audio_processor_->Initialize(codec, realtime_chat_enabled_);
+    audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
         background_task_->Schedule([this, data = std::move(data)]() mutable {
             if (protocol_->IsAudioChannelBusy()) {
                 return;
             }
             opus_encoder_->Encode(std::move(data), [this](std::vector<uint8_t>&& opus) {
-                Schedule([this, opus = std::move(opus)]() {
-                    protocol_->SendAudio(opus);
+                AudioStreamPacket packet;
+                packet.payload = std::move(opus);
+                packet.timestamp = last_output_timestamp_;
+                last_output_timestamp_ = 0;
+                Schedule([this, packet = std::move(packet)]() {
+                    protocol_->SendAudio(packet);
                 });
             });
         });
     });
-    audio_processor_.OnVadStateChange([this](bool speaking) {
+    audio_processor_->OnVadStateChange([this](bool speaking) {
         if (device_state_ == kDeviceStateListening) {
             Schedule([this, speaking]() {
                 if (speaking) {
@@ -717,7 +666,6 @@ void Application::Start() {
             });
         }
     });
-#endif
 
 #if CONFIG_USE_WAKE_WORD_DETECT
     wake_word_detect_.Initialize(codec);
@@ -727,15 +675,15 @@ void Application::Start() {
                 SetDeviceState(kDeviceStateConnecting);
                 wake_word_detect_.EncodeWakeWordData();
 
-                if (!protocol_->OpenAudioChannel()) {
+                if (!protocol_ || !protocol_->OpenAudioChannel()) {
                     wake_word_detect_.StartDetection();
                     return;
                 }
                 
-                std::vector<uint8_t> opus;
+                AudioStreamPacket packet;
                 // Encode and send the wake word data to the server
-                while (wake_word_detect_.GetWakeWordOpus(opus)) {
-                    protocol_->SendAudio(opus);
+                while (wake_word_detect_.GetWakeWordOpus(packet.payload)) {
+                    protocol_->SendAudio(packet);
                 }
                 // Set the chat state to wake word detected
                 protocol_->SendWakeWordDetected(wake_word);
@@ -754,12 +702,15 @@ void Application::Start() {
     // Wait for the new version check to finish
     xEventGroupWaitBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT, pdTRUE, pdFALSE, portMAX_DELAY);
     SetDeviceState(kDeviceStateIdle);
-    std::string message = std::string(Lang::Strings::VERSION) + ota_.GetCurrentVersion();
-    display->ShowNotification(message.c_str());
-    display->SetChatMessage("system", "");
-    // Play the success sound to indicate the device is ready
-    ResetDecoder();
-    PlaySound(Lang::Sounds::P3_SUCCESS);
+
+    if (protocol_started) {
+        std::string message = std::string(Lang::Strings::VERSION) + ota_.GetCurrentVersion();
+        display->ShowNotification(message.c_str());
+        display->SetChatMessage("system", "");
+        // Play the success sound to indicate the device is ready
+        ResetDecoder();
+        PlaySound(Lang::Sounds::P3_SUCCESS);
+    }
     
     // Enter the main event loop
     MainEventLoop();
@@ -856,23 +807,22 @@ void Application::OnAudioOutput() {
         return;
     }
 
-    auto frame = std::move(audio_decode_queue_.front());
+    auto packet = std::move(audio_decode_queue_.front());
     audio_decode_queue_.pop_front();
     lock.unlock();
     audio_decode_cv_.notify_all();
 
     busy_decoding_audio_ = true;
-    background_task_->Schedule([this, codec, frame = std::move(frame)]() mutable {
+    background_task_->Schedule([this, codec, packet = std::move(packet)]() mutable {
         busy_decoding_audio_ = false;
         if (aborted_) {
             return;
         }
-
         std::vector<int16_t> pcm;
         if (is_pcm_streaming_) {
-            pcm.assign((int16_t*)frame.data(), (int16_t*)(frame.data() + frame.size()));
+            //pcm.assign((int16_t*)packet.payload, (int16_t*)(packet.payload + packet.size()));
         } else {
-            if (!opus_decoder_->Decode(std::move(frame), pcm)) {
+            if (!opus_decoder_->Decode(std::move(packet.payload), pcm)) {
                 return;
             }
         }
@@ -884,6 +834,7 @@ void Application::OnAudioOutput() {
             pcm = std::move(resampled);
         }
         codec->OutputData(pcm);
+        last_output_timestamp_ = packet.timestamp;
         last_output_time_ = std::chrono::steady_clock::now();
     });
 }
@@ -900,33 +851,16 @@ void Application::OnAudioInput() {
         }
     }
 #endif
-#if CONFIG_USE_AUDIO_PROCESSOR
-    if (audio_processor_.IsRunning()) {
+    if (audio_processor_->IsRunning()) {
         std::vector<int16_t> data;
-        int samples = audio_processor_.GetFeedSize();
+        int samples = audio_processor_->GetFeedSize();
         if (samples > 0) {
             ReadAudio(data, 16000, samples);
-            audio_processor_.Feed(data);
+            audio_processor_->Feed(data);
             return;
         }
     }
-#else
-    if (device_state_ == kDeviceStateListening) {
-        std::vector<int16_t> data;
-        ReadAudio(data, 16000, 30 * 16000 / 1000);
-        background_task_->Schedule([this, data = std::move(data)]() mutable {
-            if (protocol_->IsAudioChannelBusy()) {
-                return;
-            }
-            opus_encoder_->Encode(std::move(data), [this](std::vector<uint8_t>&& opus) {
-                Schedule([this, opus = std::move(opus)]() {
-                    protocol_->SendAudio(opus);
-                });
-            });
-        });
-        return;
-    }
-#endif
+
     vTaskDelay(pdMS_TO_TICKS(30));
 }
 
@@ -998,9 +932,7 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
-#if CONFIG_USE_AUDIO_PROCESSOR
-            audio_processor_.Stop();
-#endif
+            audio_processor_->Stop();
 #if CONFIG_USE_WAKE_WORD_DETECT
             wake_word_detect_.StartDetection();
 #endif
@@ -1018,11 +950,7 @@ void Application::SetDeviceState(DeviceState state) {
             UpdateIotStates();
 
             // Make sure the audio processor is running
-#if CONFIG_USE_AUDIO_PROCESSOR
-            if (!audio_processor_.IsRunning()) {
-#else
-            if (true) {
-#endif
+            if (!audio_processor_->IsRunning()) {
                 // Send the start listening command
                 protocol_->SendStartListening(listening_mode_);
                 if (listening_mode_ == kListeningModeAutoStop && previous_state == kDeviceStateSpeaking) {
@@ -1033,18 +961,14 @@ void Application::SetDeviceState(DeviceState state) {
 #if CONFIG_USE_WAKE_WORD_DETECT
                 wake_word_detect_.StopDetection();
 #endif
-#if CONFIG_USE_AUDIO_PROCESSOR
-                audio_processor_.Start();
-#endif
+                audio_processor_->Start();
             }
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
             if (listening_mode_ != kListeningModeRealtime) {
-#if CONFIG_USE_AUDIO_PROCESSOR
-                audio_processor_.Stop();
-#endif
+                audio_processor_->Stop();
 #if CONFIG_USE_WAKE_WORD_DETECT
                 wake_word_detect_.StartDetection();
 #endif

@@ -23,7 +23,13 @@
 
 
 Ota::Ota() {
-    SetCheckVersionUrl(CONFIG_OTA_VERSION_URL);
+    {
+        Settings settings("wifi", false);
+        check_version_url_ = settings.GetString("ota_url");
+        if (check_version_url_.empty()) {
+            check_version_url_ = CONFIG_OTA_URL;
+        }
+    }
 
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // Read Serial Number from efuse user_data
@@ -40,10 +46,6 @@ Ota::Ota() {
 }
 
 Ota::~Ota() {
-}
-
-void Ota::SetCheckVersionUrl(std::string check_version_url) {
-    check_version_url_ = check_version_url;
 }
 
 void Ota::SetHeader(const std::string& key, const std::string& value) {
@@ -105,6 +107,8 @@ bool Ota::CheckVersion() {
         return false;
     }
 
+    ESP_LOGI(TAG, "OTA request success: %s", check_version_url_.c_str());
+
     has_activation_code_ = false;
     has_activation_challenge_ = false;
     cJSON *activation = cJSON_GetObjectItem(root, "activation");
@@ -127,6 +131,8 @@ bool Ota::CheckVersion() {
         if (timeout_ms != NULL) {
             activation_timeout_ms_ = timeout_ms->valueint;
         }
+    } else {
+        ESP_LOGW(TAG, "No activation code found !");
     }
 
     has_mqtt_config_ = false;
@@ -142,6 +148,25 @@ bool Ota::CheckVersion() {
             }
         }
         has_mqtt_config_ = true;
+    } else {
+        ESP_LOGW(TAG, "No mqtt section found !");
+    }
+
+    has_websocket_config_ = false;
+    cJSON *websocket = cJSON_GetObjectItem(root, "websocket");
+    if (websocket != NULL) {
+        Settings settings("websocket", true);
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, websocket) {
+            if (item->type == cJSON_String) {
+                settings.SetString(item->string, item->valuestring);
+            } else if (item->type == cJSON_Number) {
+                settings.SetInt(item->string, item->valueint);
+            }
+        }
+        has_websocket_config_ = true;
+    } else {
+        ESP_LOGW(TAG, "No websocket section found!");
     }
 
     has_server_time_ = false;
@@ -165,6 +190,8 @@ bool Ota::CheckVersion() {
             settimeofday(&tv, NULL);
             has_server_time_ = true;
         }
+    } else {
+        ESP_LOGW(TAG, "No server_time section found!");
     }
 
     has_new_version_ = false;
@@ -193,7 +220,10 @@ bool Ota::CheckVersion() {
                 has_new_version_ = true;
             }
         }
+    } else {
+        ESP_LOGW(TAG, "No firmware section found!");
     }
+
     cJSON_Delete(root);
     return true;
 }
@@ -363,7 +393,6 @@ bool Ota::IsNewVersionAvailable(const std::string& currentVersion, const std::st
 
 std::string Ota::GetActivationPayload() {
     if (!has_serial_number_) {
-        ESP_LOGI(TAG, "No serial number found");
         return "{}";
     }
 
