@@ -25,8 +25,7 @@ public:
                 std::string url = audio_.getAudioFilePath(audioName);
                 ESP_LOGI(TAG, "播放指定音乐: %s", url.c_str()); // 修正这里
                 auto codec = Board::GetInstance().GetAudioCodec();
-                codec->play_stream(url.c_str());
-                return true;
+                //codec->play_stream(url.c_str());
         });
 
     }

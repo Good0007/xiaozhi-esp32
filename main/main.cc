@@ -4,7 +4,6 @@
 #include <nvs_flash.h>
 #include <driver/gpio.h>
 #include <esp_event.h>
-#include "sd_audio_reader.h"
 #include "application.h"
 #include "system_info.h"
 #include <esp_ota_ops.h>
