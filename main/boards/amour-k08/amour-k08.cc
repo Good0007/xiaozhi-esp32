@@ -258,9 +258,9 @@ private:
         thing_manager.AddThing(iot::CreateThing("Speaker"));
         thing_manager.AddThing(iot::CreateThing("Screen"));
         //注册RadioPlayer TODO
-        //thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
         //注册Switcher
-        thing_manager.AddThing(iot::CreateThing("Switcher"));
+        //thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
         // 启动图片循环显示任务
         //StartImageSlideshow();

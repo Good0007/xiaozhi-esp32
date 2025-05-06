@@ -337,6 +337,7 @@ void Application::PlayMp3Stream(const std::string& url) {
 
                 size_t consumed = 0;
                 if (mp3_decoder.DecodeFrame(peek_buf.data(), peeked, pcm_buffer)) {
+                    ESP_LOGI(TAG, "Decoded PCM samples: %zu", pcm_buffer.size());
                     consumed = mp3_decoder.LastFrameBytes();
                     ring_buffer.Pop(consumed);
 
@@ -350,6 +351,8 @@ void Application::PlayMp3Stream(const std::string& url) {
                             std::lock_guard<std::mutex> lock(mutex_);
                             audio_decode_queue_.emplace_back(std::move(audio_packet));
                         }
+                        ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
+
                         audio_decode_cv_.notify_all();
                     }
                     pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
@@ -819,8 +822,8 @@ void Application::OnAudioOutput() {
             return;
         }
         std::vector<int16_t> pcm;
-        if (is_pcm_streaming_) {
-            //pcm.assign((int16_t*)packet.payload, (int16_t*)(packet.payload + packet.size()));
+        if (playing_type_ == PlayingType::Mp3Stream) {
+            pcm.assign((int16_t*)packet.payload.data(), (int16_t*)(packet.payload.data() + packet.payload.size()));
         } else {
             if (!opus_decoder_->Decode(std::move(packet.payload), pcm)) {
                 return;
