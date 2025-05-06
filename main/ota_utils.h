@@ -23,7 +23,8 @@ class OtaUtils {
                 esp_err_t err = esp_ota_set_boot_partition(target);
                 if (err == ESP_OK) {
                     ESP_LOGI("OTA", "分区切换成功，准备重启...");
-                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                    //重启
                     esp_restart();
                 } else {
                     ESP_LOGE("OTA", "设置启动分区失败: %s", esp_err_to_name(err));

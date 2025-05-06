@@ -83,7 +83,8 @@ bool Ota::CheckVersion() {
         ESP_LOGE(TAG, "Check version URL is not properly set");
         return false;
     }
-
+    /**
+     * 
     auto http = SetupHttp();
 
     std::string data = board.GetJson();
@@ -97,9 +98,83 @@ bool Ota::CheckVersion() {
     data = http->GetBody();
     delete http;
 
+     */
+
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
     // Parse the JSON response and check if the version is newer
     // If it is, set has_new_version_ to true and store the new version and URL
+
+    // 准备请求数据
+    std::string request_data = board.GetJson();
+    std::string method = request_data.length() > 0 ? "POST" : "GET";
+    
+    // 创建信号量用于同步
+    SemaphoreHandle_t done_semaphore = xSemaphoreCreateBinary();
+    if (done_semaphore == NULL) {
+        ESP_LOGE(TAG, "Failed to create semaphore");
+        return false;
+    }
+    
+    // 用于传递结果的结构体
+    struct HttpTaskResult {
+        bool success;
+        std::string response;
+    };
+    
+    HttpTaskResult result = {false, ""};
+    
+    // 创建高堆栈任务执行HTTP请求
+    xTaskCreate([](void* param) {
+        auto data = static_cast<std::tuple<Ota*, std::string, std::string, std::string, HttpTaskResult*, SemaphoreHandle_t>*>(param);
+        Ota* self = std::get<0>(*data);
+        const std::string& url = std::get<1>(*data);
+        const std::string& method = std::get<2>(*data);
+        const std::string& request_body = std::get<3>(*data);
+        HttpTaskResult* result = std::get<4>(*data);
+        SemaphoreHandle_t semaphore = std::get<5>(*data);
+        
+        // 在高堆栈任务中执行HTTP请求
+        Http* http = self->SetupHttp();
+        
+        if (http->Open(method, url, request_body)) {
+            result->response = http->GetBody();
+            result->success = true;
+        } else {
+            ESP_LOGE(TAG, "HTTP request failed in task");
+            result->success = false;
+        }
+        
+        delete http;
+        
+        // 通知主任务继续
+        xSemaphoreGive(semaphore);
+        
+        // 清理传入的元组
+        delete data;
+        vTaskDelete(NULL);
+    }, "http_task", 8192, new std::tuple<Ota*, std::string, std::string, std::string, HttpTaskResult*, SemaphoreHandle_t>(
+        this, check_version_url_, method, request_data, &result, done_semaphore
+    ), 5, NULL);
+    
+    // 等待HTTP任务完成或超时
+    if (xSemaphoreTake(done_semaphore, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGE(TAG, "HTTP request timed out");
+        vSemaphoreDelete(done_semaphore);
+        return false;
+    }
+    
+    // 释放信号量
+    vSemaphoreDelete(done_semaphore);
+    
+    // 检查HTTP请求是否成功
+    if (!result.success) {
+        ESP_LOGE(TAG, "HTTP request failed");
+        return false;
+    }
+    
+    // 处理响应数据
+    std::string data = result.response;
+    
     
     cJSON *root = cJSON_Parse(data.c_str());
     if (root == NULL) {

@@ -175,10 +175,11 @@ private:
 
  
     void InitializeButtons() {
-        model_button_.OnPressDown([this]() { Application::GetInstance().StartListening(); });
-        model_button_.OnPressUp([this]()
-        { Application::GetInstance().StopListening(); });
-
+        //model_button_.OnPressDown([this]() { Application::GetInstance().StartListening(); });
+        //model_button_.OnPressUp([this]() { Application::GetInstance().StopListening(); });
+        model_button_.OnPressDown([this]() {
+             Application::GetInstance().ToggleChatState();
+        });
         model_button_.OnLongPress([this]() {
             ESP_LOGI(TAG, "MODEL button long press");
             OtaUtils::SwitchToOtherApp(display_);
