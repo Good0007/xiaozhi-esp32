@@ -330,55 +330,33 @@ void Application::PlayMp3Stream(const std::string& url) {
             }
             // 2. 解码环形缓冲区数据
             while (ring_buffer.Size() > 0) {
-                // 先peek出最大可用数据
-                std::vector<uint8_t> peek_buf(ring_buffer.Size());
+                size_t peek_len = std::min<size_t>(ring_buffer.Size(), 2048);
+                std::vector<uint8_t> peek_buf(peek_len);
                 size_t peeked = ring_buffer.Peek(peek_buf.data(), peek_buf.size());
                 if (peeked == 0) break;
-
-                size_t consumed = 0;
-                if (mp3_decoder.DecodeFrame(peek_buf.data(), peeked, pcm_buffer)) {
-                    ESP_LOGI(TAG, "Decoded PCM samples: %zu", pcm_buffer.size());
-                    consumed = mp3_decoder.LastFrameBytes();
+            
+                bool decoded = mp3_decoder.DecodeFrame(peek_buf.data(), peeked, pcm_buffer);
+                size_t consumed = mp3_decoder.LastFrameBytes();
+            
+                if (consumed > 0) {
                     ring_buffer.Pop(consumed);
-
-                    // PCM分帧推送到队列
-                    const size_t frame_samples = mp3_decoder.FrameSamples();
-                    for (size_t i = 0; i + frame_samples <= pcm_buffer.size(); i += frame_samples) {
-                        std::vector<uint8_t> frame((uint8_t*)&pcm_buffer[i], (uint8_t*)&pcm_buffer[i + frame_samples]);
-                        AudioStreamPacket audio_packet;
-                        audio_packet.payload = std::move(frame);
-                        {
-                            std::lock_guard<std::mutex> lock(mutex_);
-                            audio_decode_queue_.emplace_back(std::move(audio_packet));
-                        }
-                        ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
-
-                        audio_decode_cv_.notify_all();
-                    }
-                    pcm_buffer.erase(pcm_buffer.begin(), pcm_buffer.begin() + (pcm_buffer.size() / frame_samples) * frame_samples);
                 } else {
-                    // 没解出帧，说明数据不够，等待更多数据
-                    // 打印前8字节，辅助调试
-                    if (peeked >= 4) {
-                         //打印出当前帧长
-                        ESP_LOGI(TAG, "MP3 frame length: %zu", peeked);
-                        // 在peek_buf中查找帧头
-                        bool found = false;
-                        for (size_t i = 0; i < peeked - 1; ++i) {
-                            if (peek_buf[i] == 0xFF && (peek_buf[i + 1] & 0xE0) == 0xE0) {
-                                ESP_LOGI(TAG, "MP3 frame sync found at offset %zu: %02X %02X %02X %02X ...",
-                                    i, peek_buf[i], peek_buf[i+1], peek_buf[i+2], peek_buf[i+3]);
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            ESP_LOGW(TAG, "MP3 frame sync NOT found in first %zu bytes", peeked);
-                            ESP_LOGI(TAG, "MP3 peek head: %02X %02X %02X %02X ...", 
-                                peek_buf[0], peek_buf[1], peek_buf[2], peek_buf[3]);
-                        }
-                    }
                     break;
+                }
+                if (decoded && !pcm_buffer.empty()) {
+                    AudioStreamPacket audio_packet;
+                    audio_packet.payload.resize(pcm_buffer.size() * sizeof(int16_t));
+                    memcpy(audio_packet.payload.data(), pcm_buffer.data(), pcm_buffer.size() * sizeof(int16_t));
+                    {
+                        ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        audio_decode_queue_.emplace_back(std::move(audio_packet));
+                        ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
+                    }
+                    audio_decode_cv_.notify_all();
+                    pcm_buffer.clear();
+                    // 输出audio_decode_queue_的长度，输出busy_decoding_audio_
+                    ESP_LOGI(TAG, "Audio decode queue size: %zu, Busy decoding audio: %d", audio_decode_queue_.size(), busy_decoding_audio_);
                 }
             }
         }
