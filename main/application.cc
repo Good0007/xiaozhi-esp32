@@ -330,6 +330,7 @@ void Application::PlayMp3Stream(const std::string& url) {
             }
             // 2. 解码环形缓冲区数据
             while (ring_buffer.Size() > 0) {
+                pcm_buffer.clear(); // 每次循环先清空
                 size_t peek_len = std::min<size_t>(ring_buffer.Size(), 2048);
                 std::vector<uint8_t> peek_buf(peek_len);
                 size_t peeked = ring_buffer.Peek(peek_buf.data(), peek_buf.size());
@@ -354,7 +355,7 @@ void Application::PlayMp3Stream(const std::string& url) {
                         ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
                     }
                     audio_decode_cv_.notify_all();
-                    pcm_buffer.clear();
+                    busy_decoding_audio_ = false;
                     // 输出audio_decode_queue_的长度，输出busy_decoding_audio_
                     ESP_LOGI(TAG, "Audio decode queue size: %zu, Busy decoding audio: %d", audio_decode_queue_.size(), busy_decoding_audio_);
                 }
@@ -795,15 +796,18 @@ void Application::OnAudioOutput() {
 
     busy_decoding_audio_ = true;
     background_task_->Schedule([this, codec, packet = std::move(packet)]() mutable {
+        ESP_LOGI(TAG, "AudioOutput lambda start, playing_type=%d, payload.size=%zu", (int)playing_type_, packet.payload.size());
         busy_decoding_audio_ = false;
         if (aborted_) {
             return;
         }
         std::vector<int16_t> pcm;
         if (playing_type_ == PlayingType::Mp3Stream) {
+            ESP_LOGI(TAG, "Mp3Stream packet size: %zu", packet.payload.size());
             pcm.assign((int16_t*)packet.payload.data(), (int16_t*)(packet.payload.data() + packet.payload.size()));
         } else {
             if (!opus_decoder_->Decode(std::move(packet.payload), pcm)) {
+                ESP_LOGW(TAG, "Opus decode failed");
                 return;
             }
         }
