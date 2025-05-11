@@ -28,12 +28,6 @@
 
 #define TAG "Application"
 
-enum class PlayingType {
-    None,
-    Sound,
-    Mp3Stream,
-    LocalAudio
-};
 PlayingType playing_type_ = PlayingType::None;
 
 static const char* const STATE_STRINGS[] = {
@@ -83,6 +77,11 @@ Application::~Application() {
         delete background_task_;
     }
     vEventGroupDelete(event_group_);
+}
+
+// application.cc
+PlayingType Application::GetPlayingType() const {
+    return playing_type_;
 }
 
 void Application::CheckNewVersion() {
@@ -287,88 +286,236 @@ void Application::PlaySound(const std::string_view& sound) {
     playing_type_ = PlayingType::None;
 }
 
-void Application::PlayMp3Stream(const std::string& url) {
-    std::unique_lock<std::mutex> lock(mutex_);
+void Application::StopPlaying() {
+    ESP_LOGI(TAG, "Stop playing");
     if (playing_type_ != PlayingType::None) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        playing_type_ = PlayingType::None;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void Application::changePlaying(PlayingType type, PlayInfo &play_info) {
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        playing_type_ = PlayingType::None; // 通知播放循环退出
+    }
+    background_task_->WaitForCompletion();
+    vTaskDelay(pdMS_TO_TICKS(500));  
+    ESP_LOGI(TAG, "Change playing type: %d, url: %s", (int)type, play_info.url.c_str());
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        audio_decode_cv_.wait(lock, [this] {
+            return audio_decode_queue_.empty();
+        });
+        SetDeviceState(kDeviceStateIdle);
+        this->current_playing_url_ = play_info.url;
+        //转成list
+        this->play_list_.clear();
+        this->play_list_.push_back(play_info);
+        playing_type_ = type;
+    }
+
+}
+
+static constexpr const char* PLAYING = "正在播放";
+void Application::PlayMp3Stream() {
+    if (current_playing_url_.empty() || playing_type_!= PlayingType::Mp3Stream) {
         ESP_LOGW(TAG, "Another audio is playing, ignore PlayMp3Stream");
         return;
     }
-    lock.unlock();
-    // 切换到 idle，停止语音相关任务
-    //SetDeviceState(kDeviceStateIdle);
+    ESP_LOGI(TAG, "PlayMp3Stream: %s", current_playing_url_.c_str());
+    //屏幕上输出当前播放的节目
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus(PLAYING);
+    display->SetChatMessage("system", ("当前播放:" + play_list_[0].name).c_str());
 
-    // 1. 停止当前音频播放
-    ResetDecoder();
-    playing_type_ = PlayingType::Mp3Stream;
-
-    ESP_LOGI(TAG, "PlayMp3Stream: %s", url.c_str());
-    // 2. 启动后台任务，拉取网络流并解码
-    background_task_->Schedule([this, url]() {
-        Mp3StreamDecoderWrapper mp3_decoder;
-        RingBuffer ring_buffer(16 * 1024); // 32KB环形缓冲区
-        std::vector<int16_t> pcm_buffer;
-
-        // 伪代码：打开网络流
-        auto stream = OpenNetworkStream(url);
-        if (!stream) {
-            ESP_LOGE(TAG, "Failed to open mp3 stream");
-            return;
-        }
-        uint8_t temp[2048];
-        while (!aborted_) {
-            // 2.1 读取一段 mp3 数据
-            int read_bytes = stream->Read(temp, sizeof(temp));
-            if (read_bytes > 0) {
-                size_t written = ring_buffer.Write(temp, read_bytes);
-                if (written < (size_t)read_bytes) {
-                    ESP_LOGW(TAG, "RingBuffer full, drop %d bytes", (int)(read_bytes - written));
-                }
-            } else {
-                ESP_LOGE(TAG, "Failed to read mp3 stream");
-                vTaskDelay(pdMS_TO_TICKS(10));
-
-            }
-            // 2. 解码环形缓冲区数据
-            while (ring_buffer.Size() > 0) {
-                pcm_buffer.clear(); // 每次循环先清空
-                size_t peek_len = std::min<size_t>(ring_buffer.Size(), 2048);
-                std::vector<uint8_t> peek_buf(peek_len);
-                size_t peeked = ring_buffer.Peek(peek_buf.data(), peek_buf.size());
-                if (peeked == 0) break;
-            
-                bool decoded = mp3_decoder.DecodeFrame(peek_buf.data(), peeked, pcm_buffer);
-                size_t consumed = mp3_decoder.LastFrameBytes();
-            
-                if (consumed > 0) {
-                    ring_buffer.Pop(consumed);
-                } else {
-                    break;
-                }
-                if (decoded && !pcm_buffer.empty()) {
-                    AudioStreamPacket audio_packet;
-                    audio_packet.payload.resize(pcm_buffer.size() * sizeof(int16_t));
-                    memcpy(audio_packet.payload.data(), pcm_buffer.data(), pcm_buffer.size() * sizeof(int16_t));
-                    {
-                        ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        audio_decode_queue_.emplace_back(std::move(audio_packet));
-                        ESP_LOGI(TAG, "Pushed audio packet to queue, size: %zu", audio_packet.payload.size());
-                    }
-                    audio_decode_cv_.notify_all();
-                    busy_decoding_audio_ = false;
-                    // 输出audio_decode_queue_的长度，输出busy_decoding_audio_
-                    ESP_LOGI(TAG, "Audio decode queue size: %zu, Busy decoding audio: %d", audio_decode_queue_.size(), busy_decoding_audio_);
-                }
-            }
-        }
-        //打印结束
-        ESP_LOGI(TAG, "Mp3 stream ended");
-        std::lock_guard<std::mutex> lock(mutex_);
+    // 将大型缓冲区从栈移到堆上
+    std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(16 * 1024);
+    std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>();
+    // 打开网络流
+    auto stream = OpenNetworkStream(current_playing_url_);
+    if (!stream) {
+        ESP_LOGE(TAG, "Failed to open mp3 stream");
         playing_type_ = PlayingType::None;
-    });
+        //播放失败
+        display->SetChatMessage("system", "播放失败，请稍后再试");
+        display->SetEmotion("sad");
+        return;
+    }
+    
+    // 减小临时缓冲区大小，预分配合适大小以减少重新分配
+    const size_t READ_BUFFER_SIZE = 4094;
+    std::vector<uint8_t> temp_buffer(READ_BUFFER_SIZE);
+    std::vector<int16_t> pcm_buffer;
+    pcm_buffer.reserve(4096);  // 预分配一个合理大小，减少重新分配
+    
+    int consecutive_errors = 0;
+    try {
+        while (playing_type_== PlayingType::Mp3Stream) {
+            // 使用非阻塞读取并加入超时检查
+            int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());  
+            // 读取错误或EOF处理
+            if (read_bytes <= 0) {
+                consecutive_errors++;
+                ESP_LOGI(TAG, "Read error or EOF, read_bytes: %d, consecutive_errors: %d", read_bytes, consecutive_errors);
+                continue;
+            }
+            
+            // 成功读取，重置错误计数器
+            consecutive_errors = 0;
+            
+            size_t written = ring_buffer->Write(temp_buffer.data(), read_bytes);
+            if (written < (size_t)read_bytes) {
+                ESP_LOGW(TAG, "RingBuffer full, dropped %d bytes", (int)(read_bytes - written));
+            }
+            
+            // 分批处理缓冲区数据
+            int process_iterations = 0;
+            const int MAX_PROCESS_ITERATIONS = 30;  // 防止无限循环
+            
+            while (ring_buffer->Size() > 512 && playing_type_== PlayingType::Mp3Stream && process_iterations < MAX_PROCESS_ITERATIONS) {
+                process_iterations++;
+                
+                pcm_buffer.clear(); // 只清空不释放内存
+                size_t peek_len = std::min<size_t>(ring_buffer->Size(), 2048);
+                temp_buffer.resize(peek_len);
+                
+                size_t peeked = ring_buffer->Peek(temp_buffer.data(), temp_buffer.size());
+                if (peeked == 0) break;
+                
+                bool decoded = false;
+                try {
+                    decoded = mp3_decoder->DecodeFrame(temp_buffer.data(), peeked, pcm_buffer);
+                    // 如果解码成功但没有数据，可能是头帧或其他元数据
+                    if (decoded && pcm_buffer.empty()) {
+                        ESP_LOGD(TAG, "MP3 decode succeeded but no PCM data (metadata frame)");
+                    }
+                    // 只记录有意义的解码结果，减少日志噪音
+                    if (decoded && !pcm_buffer.empty()) {
+                        //SP_LOGI(TAG, "MP3 decode succeeded, length: %zu, decoded samples: %zu",  peeked, pcm_buffer.size());
+                    } else if (!decoded) {
+                        // 只在调试级别记录失败，避免日志过多
+                        ESP_LOGD(TAG, "MP3 decode failed, length: %zu", peeked);
+                    }
+                } catch (const std::exception& e) {
+                    ESP_LOGE(TAG, "MP3 decoding exception: %s", e.what());
+                    ring_buffer->Pop(std::min<size_t>(64, ring_buffer->Size()));
+                    continue;
+                }
+                size_t consumed = mp3_decoder->LastFrameBytes();
+                if (consumed > 0) {
+                    ring_buffer->Pop(consumed);
+                } else {
+                     // 处理流结束 - 如果缓冲区很小且无法解码，可能是流的末尾
+                    if (ring_buffer->Size() < 128) {
+                        ESP_LOGI(TAG, "Reached end of stream with %zu bytes remaining, clearing buffer", ring_buffer->Size());
+                        ring_buffer->Pop(ring_buffer->Size()); // 清空剩余数据
+                        break;
+                    }
+                    // 正常情况下，跳过一小部分数据
+                    size_t skip_bytes = std::min<size_t>(16, ring_buffer->Size());
+                    ring_buffer->Pop(skip_bytes);
+                    ESP_LOGD(TAG, "No frame detected, skipping %zu bytes", skip_bytes);
+
+                }
+                // 统计连续解码失败的次数
+                static int consecutive_decode_failures = 0;
+                if (!decoded || pcm_buffer.empty()) {
+                    consecutive_decode_failures++;
+                    // 每处理10个失败帧，让出一下CPU
+                    if (consecutive_decode_failures % 10 == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(1));
+                    }
+                } else {
+                    // 解码成功，重置失败计数器
+                    consecutive_decode_failures = 0;
+                }
+                // 只有当真正解码出PCM数据时才处理
+                if (decoded && !pcm_buffer.empty()) {
+                    ProcessDecodedPcmData(pcm_buffer);
+                    //输出队列长度
+                    //ESP_LOGI(TAG, "Audio decode queue size: %zu", audio_decode_queue_.size());
+                }
+            }
+            // 流结束处理 - 如果解码完成后环形缓冲区中还有少量数据
+            if (ring_buffer->Size() > 0 && ring_buffer->Size() < 64) {
+                ESP_LOGI(TAG, "Stream ended with %zu bytes remaining, clearing buffer", ring_buffer->Size());
+                ring_buffer->Pop(ring_buffer->Size());
+            }
+            if (ring_buffer->Size() > (ring_buffer->Capacity() * 0.8)) {
+                vTaskDelay(pdMS_TO_TICKS(10)); // 当缓冲区接近满时短暂暂停读取
+            }
+            //vTaskDelay(pdMS_TO_TICKS(10)); 
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "Exception in PlayMp3Stream: %s", e.what());
+    }
+    
+    // 确保资源正确关闭
+    try {
+        if (stream) {
+            stream->Close();  // 如果有显式关闭方法则调用
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "Error closing stream: %s", e.what());
+    }
+    
+    ESP_LOGI(TAG, "Mp3 stream playback ended");
+    playing_type_ = PlayingType::None;
 }
 
-void Application::PlayLocalAudio(const std::string& path) {
+constexpr size_t OPTIMAL_WRITE_SAMPLES = 240; // 10ms@24kHz
+
+// 48kHz → 24kHz 2:1 降采样（丢弃一半样本或做均值）：
+std::vector<int16_t> Downsample2x(const std::vector<int16_t>& input) {
+    std::vector<int16_t> output;
+    output.reserve(input.size() / 2);
+    for (size_t i = 0; i + 1 < input.size(); i += 2) {
+        // 简单平均，减少高频失真
+        output.push_back((input[i] / 2) + (input[i + 1] / 2));
+    }
+    return output;
+}
+
+// 添加辅助函数处理解码后的PCM数据
+void Application::ProcessDecodedPcmData(std::vector<int16_t>& pcm_data) {
+    auto codec = Board::GetInstance().GetAudioCodec();
+    std::vector<int16_t> resampled = Downsample2x(pcm_data);
+    size_t offset = 0;
+    while (offset < resampled.size()) {
+        size_t chunk_size = std::min(OPTIMAL_WRITE_SAMPLES, resampled.size() - offset);
+        std::vector<int16_t> chunk(resampled.begin() + offset, 
+                                   resampled.begin() + offset + chunk_size);
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!audio_decode_queue_.empty()) {
+            ESP_LOGI(TAG, "Audio queue not empty, pausing MP3 playback to play queue audio");
+            // 直接 wait，不要 unlock
+            audio_decode_cv_.wait(lock, [this] {
+                return audio_decode_queue_.empty();
+            });
+            continue;
+        }
+        codec->OutputData(chunk);
+        offset += chunk_size;
+    }
+        /*
+        AudioStreamPacket audio_packet;
+        audio_packet.payload.resize(chunk.size() * sizeof(int16_t));
+        memcpy(audio_packet.payload.data(), chunk.data(), chunk.size() * sizeof(int16_t));
+        std::unique_lock<std::mutex> lock(mutex_);
+        audio_decode_cv_.wait(lock, [this] {
+            return audio_decode_queue_.size() < 50;
+        });
+        audio_decode_queue_.emplace_back(std::move(audio_packet));
+            offset += chunk_size;
+        }
+        */
+    //audio_decode_cv_.notify_all();
+}
+
+
+void Application::PlayLocalAudio() {
 }
 
 void Application::ToggleChatState() {
@@ -485,6 +632,14 @@ void Application::Start() {
         vTaskDelete(NULL);
     }, "audio_loop", 4096 * 2, this, 8, &audio_loop_task_handle_, realtime_chat_enabled_ ? 1 : 0);
 
+    
+    xTaskCreatePinnedToCore([](void* arg) {
+        Application* app = (Application*)arg;
+        app->PlayingLoop();
+        vTaskDelete(NULL);
+    }, "playing_loop", 4096 * 8, this, 8, &play_loop_task_handle_, 0);
+    
+
     /* Wait for the network to be ready */
     board.StartNetwork();
 
@@ -508,6 +663,10 @@ void Application::Start() {
         Alert(Lang::Strings::ERROR, message.c_str(), "sad", Lang::Sounds::P3_EXCLAMATION);
     });
     protocol_->OnIncomingAudio([this](AudioStreamPacket&& packet) {
+        //if (device_state_ == kDeviceStateIdle) {
+        //    ESP_LOGW(TAG, "Audio packet received while idle, ignoring");
+        //    return;
+        //}
         const int max_packets_in_queue = 600 / OPUS_FRAME_DURATION_MS;
         std::lock_guard<std::mutex> lock(mutex_);
         if (audio_decode_queue_.size() < max_packets_in_queue) {
@@ -544,7 +703,8 @@ void Application::Start() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                    //device_state_ == kDeviceStateIdle ||  这里去掉防止播放mp3被打断
+                    if (device_state_ == kDeviceStateListening) {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });
@@ -569,6 +729,10 @@ void Application::Start() {
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
+            if (device_state_ == kDeviceStateIdle) {
+                ESP_LOGW(TAG, "STT packet received while idle, ignoring");
+                return;
+            }
             auto text = cJSON_GetObjectItem(root, "text");
             if (text != NULL) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
@@ -745,7 +909,13 @@ void Application::MainEventLoop() {
             std::list<std::function<void()>> tasks = std::move(main_tasks_);
             lock.unlock();
             for (auto& task : tasks) {
-                task();
+                try {
+                    task();
+                } catch (const std::exception& e) {
+                    ESP_LOGE(TAG, "Exception in background task: %s", e.what());
+                } catch (...) {
+                    ESP_LOGE(TAG, "Unknown exception in background task");
+                }
             }
         }
     }
@@ -759,6 +929,26 @@ void Application::AudioLoop() {
         if (codec->output_enabled()) {
             OnAudioOutput();
         }
+    }
+}
+
+// Playing audio Loop
+void Application::PlayingLoop() {
+    while (true) {
+        if (current_playing_url_.empty() or playing_type_ != PlayingType::Mp3Stream) {
+            //ESP_LOGI(TAG, "Waiting for audio stream...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (playing_type_ == PlayingType::Mp3Stream) {
+            PlayMp3Stream();
+        }  else if (playing_type_ == PlayingType::LocalAudio) {
+            PlayLocalAudio();
+        }
+        else {
+            ESP_LOGW(TAG, "Unknown playing type: %d", (int)playing_type_);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -795,21 +985,16 @@ void Application::OnAudioOutput() {
     audio_decode_cv_.notify_all();
 
     busy_decoding_audio_ = true;
+
     background_task_->Schedule([this, codec, packet = std::move(packet)]() mutable {
-        ESP_LOGI(TAG, "AudioOutput lambda start, playing_type=%d, payload.size=%zu", (int)playing_type_, packet.payload.size());
         busy_decoding_audio_ = false;
         if (aborted_) {
             return;
         }
         std::vector<int16_t> pcm;
-        if (playing_type_ == PlayingType::Mp3Stream) {
-            ESP_LOGI(TAG, "Mp3Stream packet size: %zu", packet.payload.size());
-            pcm.assign((int16_t*)packet.payload.data(), (int16_t*)(packet.payload.data() + packet.payload.size()));
-        } else {
-            if (!opus_decoder_->Decode(std::move(packet.payload), pcm)) {
-                ESP_LOGW(TAG, "Opus decode failed");
-                return;
-            }
+        if (!opus_decoder_->Decode(std::move(packet.payload), pcm)) {
+            ESP_LOGW(TAG, "Opus decode failed");
+            return;
         }
         // Resample if the sample rate is different
         if (opus_decoder_->sample_rate() != codec->output_sample_rate()) {
@@ -897,6 +1082,7 @@ void Application::SetListeningMode(ListeningMode mode) {
 }
 
 void Application::SetDeviceState(DeviceState state) {
+    ESP_LOGI(TAG, "STATE: %s (called from %s:%d)", STATE_STRINGS[state], __FILE__, __LINE__);
     if (device_state_ == state) {
         return;
     }

@@ -15,6 +15,7 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <driver/spi_common.h>
+#include "ota_utils.h"
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
@@ -66,7 +67,44 @@ class CompactWifiBoardLCD : public WifiBoard {
 private:
  
     Button boot_button_;
+    Button volume_up_button_;    // 添加为成员变量
+    Button volume_down_button_;  // 添加为成员变量
+    Button model_button_;        // 添加为成员变量
+    bool volume_up_pressed_ = false;  // 跟踪音量+按钮状态
+    bool volume_down_pressed_ = false; // 跟踪音量-按钮状态
+    bool screen_on_ = true;  // 跟踪屏幕状态
     LcdDisplay* display_;
+
+    void ToggleScreenOnOff() {
+        if (!screen_on_) {
+            // 打开屏幕
+            ESP_LOGI(TAG, "Turning screen ON");
+            if (GetBacklight()) {
+                GetBacklight()->RestoreBrightness();
+            }
+            if (display_) {
+                esp_lcd_panel_handle_t panel = display_->GetPanel();
+                if (panel) {
+                    esp_lcd_panel_disp_on_off(panel, true);
+                }
+            }
+            screen_on_ = true;
+        } else {
+            // 关闭屏幕
+            ESP_LOGI(TAG, "Turning screen OFF");
+            if (GetBacklight()) {
+                GetBacklight()->SetBrightness(0);
+            }
+            if (display_) {
+                esp_lcd_panel_handle_t panel = display_->GetPanel();
+                if (panel) {
+                    esp_lcd_panel_disp_on_off(panel, false);
+                }
+            }
+            screen_on_ = false;
+        }
+    }
+
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -135,15 +173,86 @@ private:
                                     });
     }
 
-
- 
     void InitializeButtons() {
-        boot_button_.OnClick([this]() {
+        //model_button_.OnPressDown([this]() { Application::GetInstance().StartListening(); });
+        //model_button_.OnPressUp([this]() { Application::GetInstance().StopListening(); });
+        model_button_.OnPressDown([this]() {
+             //调试播放音乐
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-                ResetWifiConfiguration();
-            }
+            app.StopPlaying();
             app.ToggleChatState();
+             //std::string _url = "http://lhttp.qtfm.cn/live/4915/64k.mp3";
+             //app.changePlaying(PlayingType::Mp3Stream,_url);
+        });
+        model_button_.OnLongPress([this]() {
+            ESP_LOGI(TAG, "MODEL button long press");
+            OtaUtils::SwitchToOtherApp(display_);
+        });
+
+        // 音量增加按钮
+        volume_up_button_.OnPressDown([this]() {
+            ESP_LOGI(TAG, "Volume Up Button Pressed");
+            volume_up_pressed_ = true;
+            
+            // 检查是否两个音量按钮都被按下
+            if (volume_up_pressed_ && volume_down_pressed_) {
+                ESP_LOGI(TAG, "Both volume buttons pressed - resetting WiFi");
+                ResetWifiConfiguration();
+                // 显示重置提示
+                if (display_) {
+                    display_->SetChatMessage("system", "WiFi配置已重置，请重新配网");
+                }
+            } else {
+                // 正常音量增加逻辑
+                auto codec = GetAudioCodec();
+                if (codec) {
+                    int volume = codec->output_volume();
+                    codec->SetOutputVolume(volume + 5);
+                    ESP_LOGI(TAG, "Volume increased to %d", volume + 5);
+                }
+            }
+        });
+        volume_up_button_.OnPressUp([this]() {
+            ESP_LOGI(TAG, "Volume Up Button Released");
+            volume_up_pressed_ = false;
+        });
+
+        volume_up_button_.OnLongPress([this]() {
+           //屏幕开关
+           ToggleScreenOnOff();
+        });
+
+        // 音量减少按钮
+        volume_down_button_.OnPressDown([this]() {
+            ESP_LOGI(TAG, "Volume Down Button Pressed");
+            volume_down_pressed_ = true;
+            
+            // 检查是否两个音量按钮都被按下
+            if (volume_up_pressed_ && volume_down_pressed_) {
+                ESP_LOGI(TAG, "Both volume buttons pressed - resetting WiFi");
+                ResetWifiConfiguration();
+                // 显示重置提示
+                if (display_) {
+                    display_->SetChatMessage("system", "WiFi配置已重置，请重新配网");
+                }
+            } else {
+                // 正常音量减少逻辑
+                auto codec = GetAudioCodec();
+                if (codec) {
+                    int volume = codec->output_volume();
+                    codec->SetOutputVolume(volume - 5);
+                    ESP_LOGI(TAG, "Volume decreased to %d", volume - 5);
+                }
+            }
+        });
+        
+        volume_down_button_.OnPressUp([this]() {
+            ESP_LOGI(TAG, "Volume Down Button Released");
+            volume_down_pressed_ = false;
+        });
+
+        volume_down_button_.OnLongPress([this]() {
+            ESP_LOGI(TAG, "Volume Down Button OnLongPress");
         });
     }
 
@@ -152,12 +261,21 @@ private:
         auto& thing_manager = iot::ThingManager::GetInstance();
         thing_manager.AddThing(iot::CreateThing("Speaker"));
         thing_manager.AddThing(iot::CreateThing("Screen"));
-        thing_manager.AddThing(iot::CreateThing("Lamp"));
+        //注册RadioPlayer TODO
+        thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        //注册Switcher
+        //thing_manager.AddThing(iot::CreateThing("Switcher"));
+        // thing_manager.AddThing(iot::CreateThing("Lamp"));
+        // 启动图片循环显示任务
+        //StartImageSlideshow();
     }
 
 public:
     CompactWifiBoardLCD() :
-        boot_button_(BOOT_BUTTON_GPIO) {
+        boot_button_(BOOT_BUTTON_GPIO),
+        volume_up_button_(VOLUME_UP_BUTTON_GPIO),
+        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO),
+        model_button_(MODEL_BUTTON_GPIO) {
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();

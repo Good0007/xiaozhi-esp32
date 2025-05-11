@@ -17,6 +17,7 @@
 #include <esp_lcd_panel_ops.h>
 #include <driver/spi_common.h>
 #include "ota_utils.h"
+#include "online_music.h"
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
@@ -178,7 +179,12 @@ private:
         //model_button_.OnPressDown([this]() { Application::GetInstance().StartListening(); });
         //model_button_.OnPressUp([this]() { Application::GetInstance().StopListening(); });
         model_button_.OnPressDown([this]() {
-             Application::GetInstance().ToggleChatState();
+             //调试播放音乐
+            auto& app = Application::GetInstance();
+            app.StopPlaying();
+            app.ToggleChatState();
+             //std::string _url = "http://lhttp.qtfm.cn/live/4915/64k.mp3";
+             //app.changePlaying(PlayingType::Mp3Stream,_url);
         });
         model_button_.OnLongPress([this]() {
             ESP_LOGI(TAG, "MODEL button long press");
@@ -211,6 +217,22 @@ private:
         volume_up_button_.OnPressUp([this]() {
             ESP_LOGI(TAG, "Volume Up Button Released");
             volume_up_pressed_ = false;
+            //测试音乐搜索接口
+            /**
+            std::string keyword = "张杰";
+            std::vector<MusicInfo> results = MusicSearch::Search(keyword);
+            if (!results.empty()) {
+                ESP_LOGI(TAG, "Search results:");
+                for (const auto& music : results) {
+                    ESP_LOGI(TAG, "ID: %d, Name: %s, Album: %s", music.id, music.name.c_str(), music.album.c_str());
+                }
+                //获取url
+                std::string play_url = MusicSearch::GetPlayUrl(results[0].id);
+                ESP_LOGI(TAG, "Play URL: %s", play_url.c_str());
+            } else {
+                ESP_LOGI(TAG, "No results found for keyword: %s", keyword.c_str());
+            }
+            */
         });
 
         volume_up_button_.OnLongPress([this]() {
@@ -259,6 +281,8 @@ private:
         thing_manager.AddThing(iot::CreateThing("Screen"));
         //注册RadioPlayer TODO
         thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        // 注册在线播放器
+        thing_manager.AddThing(iot::CreateThing("OnlineMp3Player"));
         //注册Switcher
         //thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));

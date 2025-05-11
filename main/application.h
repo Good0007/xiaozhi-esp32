@@ -31,6 +31,13 @@
 #define AUDIO_OUTPUT_READY_EVENT (1 << 2)
 #define CHECK_NEW_VERSION_DONE_EVENT (1 << 3)
 
+enum class PlayingType {
+    None,
+    Sound,
+    Mp3Stream,
+    LocalAudio
+};
+
 enum DeviceState {
     kDeviceStateUnknown,
     kDeviceStateStarting,
@@ -43,6 +50,14 @@ enum DeviceState {
     kDeviceStateActivating,
     kDeviceStateFatalError
 };
+
+//创建playInfo对象，保存播放信息（名称、url）
+struct PlayInfo {
+    std::string name;
+    std::string url = "";
+    uint8_t tag = 0;  // 0: 音乐 1 : 新闻 2: 交通 3: 财经
+};
+
 
 #define OPUS_FRAME_DURATION_MS 60
 
@@ -72,15 +87,21 @@ public:
     void WakeWordInvoke(const std::string& wake_word);
     void PlaySound(const std::string_view& sound);
     bool CanEnterSleepMode();
-    void PlayMp3Stream(const std::string& url);
-    void PlayLocalAudio(const std::string& path);
-    
+    //传入类型和地址
+    void changePlaying(PlayingType type, PlayInfo &play_info);
+    //停止播放
+    void StopPlaying();
+    void ProcessDecodedPcmData(std::vector<int16_t>& pcm_data);
+    void PlayMp3Stream();
+    void PlayLocalAudio();
+    PlayingType GetPlayingType() const;
+
 private:
     Application();
     ~Application();
 
-    //是否原始pcm
-    bool is_pcm_streaming_ = false;
+    //MP3暂停标记
+    bool mp3_paused_ = false;
 
 #if CONFIG_USE_WAKE_WORD_DETECT
     WakeWordDetect wake_word_detect_;
@@ -107,6 +128,8 @@ private:
 
     // Audio encode / decode
     TaskHandle_t audio_loop_task_handle_ = nullptr;
+    TaskHandle_t play_loop_task_handle_ = nullptr;
+
     BackgroundTask* background_task_ = nullptr;
     std::chrono::steady_clock::time_point last_output_time_;
     std::atomic<uint32_t> last_output_timestamp_ = 0;
@@ -131,6 +154,12 @@ private:
     void OnClockTimer();
     void SetListeningMode(ListeningMode mode);
     void AudioLoop();
+    void PlayingLoop();
+
+    //当前播放地址 
+    std::string current_playing_url_;
+    //播放列表
+    std::vector<PlayInfo> play_list_;
 };
 
 #endif // _APPLICATION_H_

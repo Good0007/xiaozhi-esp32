@@ -30,7 +30,7 @@ std::unique_ptr<NetworkStream> OpenNetworkStream(const std::string& url) {
     config.url = url.c_str();
     config.method = HTTP_METHOD_GET;
     config.timeout_ms = 10000;
-    config.buffer_size = 4096;  // 增加缓冲区大小
+    config.buffer_size = 4096 * 2;  // 增加缓冲区大小
     config.buffer_size_tx = 512;
     config.is_async = false;    // 确保同步模式
     config.disable_auto_redirect = false;

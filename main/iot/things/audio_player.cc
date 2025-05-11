@@ -11,7 +11,7 @@ namespace iot {
 // 这里仅定义 AadioPlayer 的属性和方法，不包含具体的实现
 class AudioPlayer : public Thing {
 public:
-    AudioPlayer() : Thing("AudioPlayer", "这是一个mp3播放器") {
+    AudioPlayer() : Thing("AudioPlayer", "这是一个本地mp3播放器") {
         properties_.AddStringProperty("allAudios", "获取全部mp3文件列表", [this]() -> std::string {
             ESP_LOGI(TAG, "获取音乐列表: %s", audio_.getAllAsString().c_str());
             return audio_.getAllAsString();
