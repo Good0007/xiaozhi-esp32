@@ -323,6 +323,140 @@ bool is_mp3_frame_header(const uint8_t* data) {
     return data[0] == 0xFF && (data[1] & 0xE0) == 0xE0;
 }
 
+void Application::PlayOnlineList() {
+    //循环播放列表 循环 play_list_ 调用 playStream播放全部歌曲
+    for (const auto& play_info : play_list_) {
+        if (play_info.url.empty()) {
+            ESP_LOGW(TAG, "Empty URL in play list");
+            continue;
+        }
+        if (playing_type_ != PlayingType::Mp3Stream) {
+            ESP_LOGW(TAG, "Not in MP3 stream mode, aborting playback");
+            break;
+        }
+        PlayStream(const_cast<PlayInfo&>(play_info));
+    }
+}
+
+void Application::PlayStream(PlayInfo &play_info) {
+    std::string url = play_info.url;
+    ESP_LOGI(TAG, "playStream: %s", url.c_str());
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus("正在播放");
+    display->SetChatMessage("system", ("当前播放: " + play_info.name).c_str());
+
+    // 创建缓冲区和解码器
+    std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(16 * 1024);
+    std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>();
+    auto stream = OpenNetworkStream(url);
+    if (!stream) {
+        ESP_LOGE(TAG, "Failed to open mp3 stream");
+        display->SetChatMessage("system", "播放失败，请稍后再试");
+        display->SetEmotion("sad");
+        return;
+    }
+    //休眠一段时间，等待缓冲
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    const size_t READ_BUFFER_SIZE = 4096;
+    std::vector<uint8_t> temp_buffer(READ_BUFFER_SIZE);
+    std::vector<int16_t> pcm_buffer;
+    pcm_buffer.reserve(4096);
+
+    int consecutive_errors = 0;
+    try {
+                //设置首次缓冲标志位
+        bool first_buffer = true;
+        while (playing_type_== PlayingType::Mp3Stream) {
+            // 读取网络数据
+            int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());
+            if (read_bytes > 0) {
+                ring_buffer->Write(temp_buffer.data(), read_bytes);
+                consecutive_errors = 0;
+                //ESP_LOGI(TAG, "Read %d bytes from stream", read_bytes);
+            } else if (read_bytes == 0) {
+                consecutive_errors++;
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            } else {
+                ESP_LOGI(TAG, "Stream ended");
+                break;
+            }
+            //首次读取，多缓冲一些数据,8k
+            if (first_buffer) {
+                //跳过
+                if (ring_buffer->Size() < 8 * 1024) {
+                    //跳过循环
+                    continue;
+                } else {
+                    ESP_LOGI(TAG, "First buffer, read %d bytes", read_bytes);
+                    uint8_t id3_header[10];
+                    ring_buffer->Peek(id3_header, 10);
+                    if (memcmp(id3_header, "ID3", 3) == 0) {
+                        int tag_size = ((id3_header[6] & 0x7F) << 21) |
+                                    ((id3_header[7] & 0x7F) << 14) |
+                                    ((id3_header[8] & 0x7F) << 7) |
+                                    (id3_header[9] & 0x7F);
+                        ring_buffer->Pop(10 + tag_size);
+                        ESP_LOGI(TAG, "Skip ID3 tag, size: %d", tag_size);
+                    }
+                    first_buffer = false;
+                }
+            }
+
+            // 解码并播放
+            int process_iterations = 0;
+            while (ring_buffer->Size() >= 1152) {
+                if (playing_type_== PlayingType::None) {
+                    break;
+                }
+                process_iterations++;
+                pcm_buffer.clear();
+                size_t peek_len = std::min<size_t>(ring_buffer->Size(), 2048);
+                temp_buffer.resize(peek_len);
+                size_t peeked = ring_buffer->Peek(temp_buffer.data(), temp_buffer.size());
+                if (peeked == 0) break;
+
+                bool decoded = false;
+                try {
+                    decoded = mp3_decoder->DecodeFrame(temp_buffer.data(), peeked, pcm_buffer);
+                } catch (const std::exception& e) {
+                    ESP_LOGE(TAG, "MP3 decoding exception: %s", e.what());
+                    ring_buffer->Pop(std::min<size_t>(512, ring_buffer->Size()));
+                    continue;
+                }
+                size_t consumed = mp3_decoder->LastFrameBytes();
+                if (consumed > 0) {
+                    ring_buffer->Pop(consumed);
+                } else {
+                    ESP_LOGW(TAG, "No MP3 frame found, skipping %zu bytes", peek_len);
+                    if (ring_buffer->Size() < 128) {
+                        ring_buffer->Pop(ring_buffer->Size());
+                        break;
+                    }
+                    size_t skip_bytes = std::min<size_t>(512, ring_buffer->Size());
+                    ring_buffer->Pop(skip_bytes);
+                }
+                if (decoded && !pcm_buffer.empty()) {
+                    //ESP_LOGI(TAG, "Decoded %zu PCM samples", pcm_buffer.size());
+                    // 处理PCM数据
+                    ProcessDecodedPcmData(pcm_buffer);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "Exception in PlayOnlineStream: %s", e.what());
+    }
+
+    try {
+        if (stream) {
+            stream->Close();
+        }
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "Error closing stream: %s", e.what());
+    }
+    ESP_LOGI(TAG, "Online stream playback ended");
+}
+
 static constexpr const char* PLAYING = "正在播放";
 void Application::PlayMp3Stream() {
     if (current_playing_url_.empty() || playing_type_!= PlayingType::Mp3Stream) {
@@ -348,6 +482,8 @@ void Application::PlayMp3Stream() {
         display->SetEmotion("sad");
         return;
     }
+    //休眠一段时间，等待缓冲
+    vTaskDelay(pdMS_TO_TICKS(1000));
     
     // 减小临时缓冲区大小，预分配合适大小以减少重新分配
     const size_t READ_BUFFER_SIZE = 4094;
@@ -355,49 +491,9 @@ void Application::PlayMp3Stream() {
     std::vector<int16_t> pcm_buffer;
     pcm_buffer.reserve(4096);  // 预分配一个合理大小，减少重新分配
     
-    //循环之前先读取一次缓冲
-    int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());
-    // 跳过 ID3 标签（只需在流刚打开时做一次）
-    if (read_bytes > 0 && ring_buffer->Size() > 10) {
-        uint8_t id3_header[10];
-        ring_buffer->Peek(id3_header, 10);
-        if (memcmp(id3_header, "ID3", 3) == 0) {
-            int tag_size = ((id3_header[6] & 0x7F) << 21) |
-                        ((id3_header[7] & 0x7F) << 14) |
-                        ((id3_header[8] & 0x7F) << 7) |
-                        (id3_header[9] & 0x7F);
-            ring_buffer->Pop(10 + tag_size);
-            ESP_LOGI(TAG, "Skip ID3 tag, size: %d", tag_size);
-        }
-    }
-    // 循环peek数据找到mp3帧头
-    while (playing_type_== PlayingType::Mp3Stream) {
-        size_t peek_len = std::min<size_t>(ring_buffer->Size(), 2048);
-        temp_buffer.resize(peek_len);
-        size_t peeked = ring_buffer->Peek(temp_buffer.data(), temp_buffer.size());
-        if (peeked == 0) break;
-        
-        // 查找MP3帧头
-        const uint8_t* p = temp_buffer.data();
-        const uint8_t* end = p + peeked;
-        while (p < end - 1) {
-            if (is_mp3_frame_header(p)) {
-                break;
-            }
-            p++;
-        }
-        if (p >= end - 1) {
-            ESP_LOGW(TAG, "No MP3 frame header found, skipping %zu bytes", peeked);
-            ring_buffer->Pop(peeked);
-            continue;
-        }
-        
-        // 找到帧头，开始解码
-        break;
-    }
-
     int consecutive_errors = 0;
     try {
+
         while (playing_type_== PlayingType::Mp3Stream) {
             // 使用非阻塞读取并加入超时检查
             int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());  
@@ -405,17 +501,16 @@ void Application::PlayMp3Stream() {
             if (read_bytes <= 0) {
                 consecutive_errors++;
                 ESP_LOGI(TAG, "Read error or EOF, read_bytes: %d, consecutive_errors: %d", read_bytes, consecutive_errors);
+                //休眠100ms
+                vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
-            
             // 成功读取，重置错误计数器
             consecutive_errors = 0;
-            
             size_t written = ring_buffer->Write(temp_buffer.data(), read_bytes);
             if (written < (size_t)read_bytes) {
                 ESP_LOGW(TAG, "RingBuffer full, dropped %d bytes", (int)(read_bytes - written));
             }
-            
             // 分批处理缓冲区数据
             int process_iterations = 0;
             const int MAX_PROCESS_ITERATIONS = 30;  // 防止无限循环
@@ -528,6 +623,7 @@ void Application::ProcessDecodedPcmData(std::vector<int16_t>& pcm_data) {
     auto codec = Board::GetInstance().GetAudioCodec();
     std::vector<int16_t> resampled = Downsample2x(pcm_data);
     size_t offset = 0;
+    //ESP_LOGI(TAG, "Resampled %zu samples", resampled.size());
     while (offset < resampled.size()) {
         size_t chunk_size = std::min(OPTIMAL_WRITE_SAMPLES, resampled.size() - offset);
         std::vector<int16_t> chunk(resampled.begin() + offset, 
@@ -544,19 +640,6 @@ void Application::ProcessDecodedPcmData(std::vector<int16_t>& pcm_data) {
         codec->OutputData(chunk);
         offset += chunk_size;
     }
-        /*
-        AudioStreamPacket audio_packet;
-        audio_packet.payload.resize(chunk.size() * sizeof(int16_t));
-        memcpy(audio_packet.payload.data(), chunk.data(), chunk.size() * sizeof(int16_t));
-        std::unique_lock<std::mutex> lock(mutex_);
-        audio_decode_cv_.wait(lock, [this] {
-            return audio_decode_queue_.size() < 50;
-        });
-        audio_decode_queue_.emplace_back(std::move(audio_packet));
-            offset += chunk_size;
-        }
-        */
-    //audio_decode_cv_.notify_all();
 }
 
 
@@ -986,7 +1069,8 @@ void Application::PlayingLoop() {
             continue;
         }
         if (playing_type_ == PlayingType::Mp3Stream) {
-            PlayMp3Stream();
+            //PlayMp3Stream();
+            PlayOnlineList();
         }  else if (playing_type_ == PlayingType::LocalAudio) {
             PlayLocalAudio();
         }

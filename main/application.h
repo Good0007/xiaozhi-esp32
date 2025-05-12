@@ -94,6 +94,8 @@ public:
     void ProcessDecodedPcmData(std::vector<int16_t>& pcm_data);
     void PlayMp3Stream();
     void PlayLocalAudio();
+    void PlayOnlineList();
+    void PlayStream(PlayInfo &play_info);
     PlayingType GetPlayingType() const;
 
 private:
