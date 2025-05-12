@@ -318,6 +318,11 @@ void Application::changePlaying(PlayingType type, PlayInfo &play_info) {
 
 }
 
+bool is_mp3_frame_header(const uint8_t* data) {
+    // MPEG1 Layer III: 0xFF Ex (E0~EF)
+    return data[0] == 0xFF && (data[1] & 0xE0) == 0xE0;
+}
+
 static constexpr const char* PLAYING = "正在播放";
 void Application::PlayMp3Stream() {
     if (current_playing_url_.empty() || playing_type_!= PlayingType::Mp3Stream) {
@@ -350,6 +355,47 @@ void Application::PlayMp3Stream() {
     std::vector<int16_t> pcm_buffer;
     pcm_buffer.reserve(4096);  // 预分配一个合理大小，减少重新分配
     
+    //循环之前先读取一次缓冲
+    int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());
+    // 跳过 ID3 标签（只需在流刚打开时做一次）
+    if (read_bytes > 0 && ring_buffer->Size() > 10) {
+        uint8_t id3_header[10];
+        ring_buffer->Peek(id3_header, 10);
+        if (memcmp(id3_header, "ID3", 3) == 0) {
+            int tag_size = ((id3_header[6] & 0x7F) << 21) |
+                        ((id3_header[7] & 0x7F) << 14) |
+                        ((id3_header[8] & 0x7F) << 7) |
+                        (id3_header[9] & 0x7F);
+            ring_buffer->Pop(10 + tag_size);
+            ESP_LOGI(TAG, "Skip ID3 tag, size: %d", tag_size);
+        }
+    }
+    // 循环peek数据找到mp3帧头
+    while (playing_type_== PlayingType::Mp3Stream) {
+        size_t peek_len = std::min<size_t>(ring_buffer->Size(), 2048);
+        temp_buffer.resize(peek_len);
+        size_t peeked = ring_buffer->Peek(temp_buffer.data(), temp_buffer.size());
+        if (peeked == 0) break;
+        
+        // 查找MP3帧头
+        const uint8_t* p = temp_buffer.data();
+        const uint8_t* end = p + peeked;
+        while (p < end - 1) {
+            if (is_mp3_frame_header(p)) {
+                break;
+            }
+            p++;
+        }
+        if (p >= end - 1) {
+            ESP_LOGW(TAG, "No MP3 frame header found, skipping %zu bytes", peeked);
+            ring_buffer->Pop(peeked);
+            continue;
+        }
+        
+        // 找到帧头，开始解码
+        break;
+    }
+
     int consecutive_errors = 0;
     try {
         while (playing_type_== PlayingType::Mp3Stream) {
@@ -414,10 +460,9 @@ void Application::PlayMp3Stream() {
                         break;
                     }
                     // 正常情况下，跳过一小部分数据
-                    size_t skip_bytes = std::min<size_t>(16, ring_buffer->Size());
+                    size_t skip_bytes = std::min<size_t>(64, ring_buffer->Size());
                     ring_buffer->Pop(skip_bytes);
-                    ESP_LOGD(TAG, "No frame detected, skipping %zu bytes", skip_bytes);
-
+                    ESP_LOGW(TAG, "No frame detected, skipping %zu bytes", skip_bytes);
                 }
                 // 统计连续解码失败的次数
                 static int consecutive_decode_failures = 0;
