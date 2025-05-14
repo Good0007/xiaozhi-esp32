@@ -16,6 +16,7 @@
 #include <opus_encoder.h>
 #include <opus_decoder.h>
 #include <opus_resampler.h>
+#include "simple_resampler.h"
 
 #include "protocol.h"
 #include "ota.h"
@@ -92,7 +93,6 @@ public:
     //停止播放
     void StopPlaying();
     void ProcessDecodedPcmData(std::vector<int16_t>& pcm_data);
-    void PlayMp3Stream();
     void PlayLocalAudio();
     void PlayOnlineList();
     void PlayStream(PlayInfo &play_info);
@@ -101,9 +101,6 @@ public:
 private:
     Application();
     ~Application();
-
-    //MP3暂停标记
-    bool mp3_paused_ = false;
 
 #if CONFIG_USE_WAKE_WORD_DETECT
     WakeWordDetect wake_word_detect_;
@@ -144,6 +141,7 @@ private:
     OpusResampler input_resampler_;
     OpusResampler reference_resampler_;
     OpusResampler output_resampler_;
+    SimpleResampler* resampler_48_ = nullptr;
 
     void MainEventLoop();
     void OnAudioInput();

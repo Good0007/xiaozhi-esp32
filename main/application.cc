@@ -66,6 +66,7 @@ Application::Application() {
     };
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
+    resampler_48_ = simple_resampler_create(24000, 48000, 1);
 }
 
 Application::~Application() {
@@ -318,10 +319,6 @@ void Application::changePlaying(PlayingType type, PlayInfo &play_info) {
 
 }
 
-bool is_mp3_frame_header(const uint8_t* data) {
-    // MPEG1 Layer III: 0xFF Ex (E0~EF)
-    return data[0] == 0xFF && (data[1] & 0xE0) == 0xE0;
-}
 
 void Application::PlayOnlineList() {
     //循环播放列表 循环 play_list_ 调用 playStream播放全部歌曲
@@ -344,10 +341,11 @@ void Application::PlayStream(PlayInfo &play_info) {
     auto display = Board::GetInstance().GetDisplay();
     display->SetStatus("正在播放");
     display->SetChatMessage("system", ("当前播放: " + play_info.name).c_str());
-
+     auto codec = Board::GetInstance().GetAudioCodec();
+    int output_sample_rate_ = codec->output_sample_rate();
     // 创建缓冲区和解码器
     std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(16 * 1024);
-    std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>();
+    std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>(output_sample_rate_);
     auto stream = OpenNetworkStream(url);
     if (!stream) {
         ESP_LOGE(TAG, "Failed to open mp3 stream");
@@ -457,154 +455,6 @@ void Application::PlayStream(PlayInfo &play_info) {
     ESP_LOGI(TAG, "Online stream playback ended");
 }
 
-static constexpr const char* PLAYING = "正在播放";
-void Application::PlayMp3Stream() {
-    if (current_playing_url_.empty() || playing_type_!= PlayingType::Mp3Stream) {
-        ESP_LOGW(TAG, "Another audio is playing, ignore PlayMp3Stream");
-        return;
-    }
-    ESP_LOGI(TAG, "PlayMp3Stream: %s", current_playing_url_.c_str());
-    //屏幕上输出当前播放的节目
-    auto display = Board::GetInstance().GetDisplay();
-    display->SetStatus(PLAYING);
-    display->SetChatMessage("system", ("当前播放:" + play_list_[0].name).c_str());
-
-    // 将大型缓冲区从栈移到堆上
-    std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(16 * 1024);
-    std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>();
-    // 打开网络流
-    auto stream = OpenNetworkStream(current_playing_url_);
-    if (!stream) {
-        ESP_LOGE(TAG, "Failed to open mp3 stream");
-        playing_type_ = PlayingType::None;
-        //播放失败
-        display->SetChatMessage("system", "播放失败，请稍后再试");
-        display->SetEmotion("sad");
-        return;
-    }
-    //休眠一段时间，等待缓冲
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    
-    // 减小临时缓冲区大小，预分配合适大小以减少重新分配
-    const size_t READ_BUFFER_SIZE = 4094;
-    std::vector<uint8_t> temp_buffer(READ_BUFFER_SIZE);
-    std::vector<int16_t> pcm_buffer;
-    pcm_buffer.reserve(4096);  // 预分配一个合理大小，减少重新分配
-    
-    int consecutive_errors = 0;
-    try {
-
-        while (playing_type_== PlayingType::Mp3Stream) {
-            // 使用非阻塞读取并加入超时检查
-            int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());  
-            // 读取错误或EOF处理
-            if (read_bytes <= 0) {
-                consecutive_errors++;
-                ESP_LOGI(TAG, "Read error or EOF, read_bytes: %d, consecutive_errors: %d", read_bytes, consecutive_errors);
-                //休眠100ms
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
-            // 成功读取，重置错误计数器
-            consecutive_errors = 0;
-            size_t written = ring_buffer->Write(temp_buffer.data(), read_bytes);
-            if (written < (size_t)read_bytes) {
-                ESP_LOGW(TAG, "RingBuffer full, dropped %d bytes", (int)(read_bytes - written));
-            }
-            // 分批处理缓冲区数据
-            int process_iterations = 0;
-            const int MAX_PROCESS_ITERATIONS = 30;  // 防止无限循环
-            
-            while (ring_buffer->Size() > 512 && playing_type_== PlayingType::Mp3Stream && process_iterations < MAX_PROCESS_ITERATIONS) {
-                process_iterations++;
-                
-                pcm_buffer.clear(); // 只清空不释放内存
-                size_t peek_len = std::min<size_t>(ring_buffer->Size(), 2048);
-                temp_buffer.resize(peek_len);
-                
-                size_t peeked = ring_buffer->Peek(temp_buffer.data(), temp_buffer.size());
-                if (peeked == 0) break;
-                
-                bool decoded = false;
-                try {
-                    decoded = mp3_decoder->DecodeFrame(temp_buffer.data(), peeked, pcm_buffer);
-                    // 如果解码成功但没有数据，可能是头帧或其他元数据
-                    if (decoded && pcm_buffer.empty()) {
-                        ESP_LOGD(TAG, "MP3 decode succeeded but no PCM data (metadata frame)");
-                    }
-                    // 只记录有意义的解码结果，减少日志噪音
-                    if (decoded && !pcm_buffer.empty()) {
-                        //SP_LOGI(TAG, "MP3 decode succeeded, length: %zu, decoded samples: %zu",  peeked, pcm_buffer.size());
-                    } else if (!decoded) {
-                        // 只在调试级别记录失败，避免日志过多
-                        ESP_LOGD(TAG, "MP3 decode failed, length: %zu", peeked);
-                    }
-                } catch (const std::exception& e) {
-                    ESP_LOGE(TAG, "MP3 decoding exception: %s", e.what());
-                    ring_buffer->Pop(std::min<size_t>(64, ring_buffer->Size()));
-                    continue;
-                }
-                size_t consumed = mp3_decoder->LastFrameBytes();
-                if (consumed > 0) {
-                    ring_buffer->Pop(consumed);
-                } else {
-                     // 处理流结束 - 如果缓冲区很小且无法解码，可能是流的末尾
-                    if (ring_buffer->Size() < 128) {
-                        ESP_LOGI(TAG, "Reached end of stream with %zu bytes remaining, clearing buffer", ring_buffer->Size());
-                        ring_buffer->Pop(ring_buffer->Size()); // 清空剩余数据
-                        break;
-                    }
-                    // 正常情况下，跳过一小部分数据
-                    size_t skip_bytes = std::min<size_t>(64, ring_buffer->Size());
-                    ring_buffer->Pop(skip_bytes);
-                    ESP_LOGW(TAG, "No frame detected, skipping %zu bytes", skip_bytes);
-                }
-                // 统计连续解码失败的次数
-                static int consecutive_decode_failures = 0;
-                if (!decoded || pcm_buffer.empty()) {
-                    consecutive_decode_failures++;
-                    // 每处理10个失败帧，让出一下CPU
-                    if (consecutive_decode_failures % 10 == 0) {
-                        vTaskDelay(pdMS_TO_TICKS(1));
-                    }
-                } else {
-                    // 解码成功，重置失败计数器
-                    consecutive_decode_failures = 0;
-                }
-                // 只有当真正解码出PCM数据时才处理
-                if (decoded && !pcm_buffer.empty()) {
-                    ProcessDecodedPcmData(pcm_buffer);
-                    //输出队列长度
-                    //ESP_LOGI(TAG, "Audio decode queue size: %zu", audio_decode_queue_.size());
-                }
-            }
-            // 流结束处理 - 如果解码完成后环形缓冲区中还有少量数据
-            if (ring_buffer->Size() > 0 && ring_buffer->Size() < 64) {
-                ESP_LOGI(TAG, "Stream ended with %zu bytes remaining, clearing buffer", ring_buffer->Size());
-                ring_buffer->Pop(ring_buffer->Size());
-            }
-            if (ring_buffer->Size() > (ring_buffer->Capacity() * 0.8)) {
-                vTaskDelay(pdMS_TO_TICKS(10)); // 当缓冲区接近满时短暂暂停读取
-            }
-            //vTaskDelay(pdMS_TO_TICKS(10)); 
-        }
-    } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "Exception in PlayMp3Stream: %s", e.what());
-    }
-    
-    // 确保资源正确关闭
-    try {
-        if (stream) {
-            stream->Close();  // 如果有显式关闭方法则调用
-        }
-    } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "Error closing stream: %s", e.what());
-    }
-    
-    ESP_LOGI(TAG, "Mp3 stream playback ended");
-    playing_type_ = PlayingType::None;
-}
-
 constexpr size_t OPTIMAL_WRITE_SAMPLES = 240; // 10ms@24kHz
 
 // 48kHz → 24kHz 2:1 降采样（丢弃一半样本或做均值）：
@@ -621,13 +471,13 @@ std::vector<int16_t> Downsample2x(const std::vector<int16_t>& input) {
 // 添加辅助函数处理解码后的PCM数据
 void Application::ProcessDecodedPcmData(std::vector<int16_t>& pcm_data) {
     auto codec = Board::GetInstance().GetAudioCodec();
-    std::vector<int16_t> resampled = Downsample2x(pcm_data);
+    //std::vector<int16_t> resampled = Downsample2x(pcm_data);
     size_t offset = 0;
     //ESP_LOGI(TAG, "Resampled %zu samples", resampled.size());
-    while (offset < resampled.size()) {
-        size_t chunk_size = std::min(OPTIMAL_WRITE_SAMPLES, resampled.size() - offset);
-        std::vector<int16_t> chunk(resampled.begin() + offset, 
-                                   resampled.begin() + offset + chunk_size);
+    while (offset < pcm_data.size()) {
+        size_t chunk_size = std::min(OPTIMAL_WRITE_SAMPLES, pcm_data.size() - offset);
+        std::vector<int16_t> chunk(pcm_data.begin() + offset, 
+                                   pcm_data.begin() + offset + chunk_size);
         std::unique_lock<std::mutex> lock(mutex_);
         if (!audio_decode_queue_.empty()) {
             ESP_LOGI(TAG, "Audio queue not empty, pausing MP3 playback to play queue audio");
@@ -803,17 +653,18 @@ void Application::Start() {
     });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveMode(false);
-        if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
-            ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
-                protocol_->server_sample_rate(), codec->output_sample_rate());
+        if (codec->output_sample_rate() == 48000 && resampler_48_ != nullptr) {
+          
+        } else {
+            SetDecodeSampleRate(protocol_->server_sample_rate(), protocol_->server_frame_duration());
+            auto& thing_manager = iot::ThingManager::GetInstance();
+            protocol_->SendIotDescriptors(thing_manager.GetDescriptorsJson());
+            std::string states;
+            if (thing_manager.GetStatesJson(states, false)) {
+                protocol_->SendIotStates(states);
+            }
         }
-        SetDecodeSampleRate(protocol_->server_sample_rate(), protocol_->server_frame_duration());
-        auto& thing_manager = iot::ThingManager::GetInstance();
-        protocol_->SendIotDescriptors(thing_manager.GetDescriptorsJson());
-        std::string states;
-        if (thing_manager.GetStatesJson(states, false)) {
-            protocol_->SendIotStates(states);
-        }
+        
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveMode(true);
@@ -1126,12 +977,23 @@ void Application::OnAudioOutput() {
             return;
         }
         // Resample if the sample rate is different
-        if (opus_decoder_->sample_rate() != codec->output_sample_rate()) {
-            int target_size = output_resampler_.GetOutputSamples(pcm.size());
-            std::vector<int16_t> resampled(target_size);
-            output_resampler_.Process(pcm.data(), pcm.size(), resampled.data());
+        if (codec->output_sample_rate() == 48000 && resampler_48_ != nullptr) {
+            size_t out_samples = pcm.size() * 48000 / opus_decoder_->sample_rate();
+            std::vector<int16_t> resampled(out_samples);
+            simple_resampler_process(
+                resampler_48_, 
+                pcm.data(), pcm.size(), 
+                resampled.data(), resampled.size());
             pcm = std::move(resampled);
+        } else {
+            if (opus_decoder_->sample_rate() != codec->output_sample_rate()) {
+                int target_size = output_resampler_.GetOutputSamples(pcm.size());
+                std::vector<int16_t> resampled(target_size);
+                output_resampler_.Process(pcm.data(), pcm.size(), resampled.data());
+                pcm = std::move(resampled);
+            }
         }
+       
         codec->OutputData(pcm);
         last_output_timestamp_ = packet.timestamp;
         last_output_time_ = std::chrono::steady_clock::now();

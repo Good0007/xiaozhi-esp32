@@ -18,8 +18,17 @@ public:
     // 搜索音乐，返回结果列表
     static std::vector<MusicInfo> Search(
         const std::string& keyword, 
-        int count = 5, int page = 1, 
+        int count = 10, int page = 1, 
         const std::string& source = "netease_album");
+
+    // 搜索音乐，获取一个播放列表
+    static std::vector<PlayInfo> GetPlayList(
+        const std::string& keyword, 
+        const int limit = 5,
+        const std::string& source = "netease");
+
+    // 随机获取播放信息
+    static PlayInfo getRandomPlayInfo(const std::string& keyword, const std::string& source = "netease");
 
     // 获取播放地址
     static std::string GetPlayUrl(int32_t id, const std::string& source = "netease");

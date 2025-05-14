@@ -1,10 +1,11 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include "simple_resampler.h"
 
 class Mp3StreamDecoderWrapper {
 public:
-    Mp3StreamDecoderWrapper();
+    Mp3StreamDecoderWrapper(int ouput_sample_rate = 24000);
     ~Mp3StreamDecoderWrapper();
 
     // 输入一段MP3数据，输出PCM数据，返回是否解出一帧
@@ -31,4 +32,7 @@ private:
     int sample_rate_;
     int channels_;
     size_t frame_samples_;
+    int output_sample_rate_; // 目标采样率
+    SimpleResampler* resampler_48_; //48kHz转24kHz
+    SimpleResampler* resampler_44_; //44.1kHz转24kHz
 };

@@ -147,6 +147,54 @@ std::string UrlEncode(const std::string& value) {
     return escaped.str();
 }
 
+std::vector<PlayInfo> MusicSearch::GetPlayList(const std::string& keyword,int limit, const std::string& source) {
+    std::vector<MusicInfo> results = MusicSearch::Search(keyword, limit, 1, source);
+    if (results.empty()) {
+        ESP_LOGI("getPlayList", "No results found for keyword: %s", keyword.c_str());
+        return {};
+    }
+    std::vector<PlayInfo> play_list;
+    for (const auto& info : results) {
+        PlayInfo play_info;
+        play_info.name = info.name;
+        play_info.tag = 0; // 音乐
+        play_info.url = MusicSearch::GetPlayUrl(info.id, info.source);
+        ESP_LOGI("getPlayList", "ID: %d, Name: %s, URL: %s", info.id, play_info.name.c_str(), play_info.url.c_str());
+        if (!play_info.url.empty()) {
+            play_list.push_back(play_info);
+        }
+    }
+    return play_list;
+}
+
+PlayInfo MusicSearch::getRandomPlayInfo(const std::string& keyword, const std::string& source) {
+    std::vector<MusicInfo> results = MusicSearch::Search(keyword, 20, 1, source);
+    if (results.empty()) {
+        ESP_LOGI("getRandomPlayInfo", "No results found for keyword: %s", keyword.c_str());
+        return PlayInfo{};
+    }
+
+    int max_attempts = 3;
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        // 随机选一个
+        int idx = rand() % results.size();
+        const MusicInfo& info = results[idx];
+        PlayInfo play_info;
+        play_info.name = info.name;
+        play_info.tag = 0; // 音乐
+        play_info.url = MusicSearch::GetPlayUrl(info.id, info.source);
+        ESP_LOGI("getRandomPlayInfo", "Try %d: ID: %d, Name: %s, URL: %s", attempt + 1, info.id, play_info.name.c_str(), play_info.url.c_str());
+        if (!play_info.url.empty()) {
+            return play_info;
+        }
+        // 如果失败，移除该项，避免重复尝试
+        results.erase(results.begin() + idx);
+        if (results.empty()) break;
+    }
+    ESP_LOGI("getRandomPlayInfo", "Failed to get valid play url after %d attempts", max_attempts);
+    return PlayInfo{};
+}
+
 PlayInfo MusicSearch::getPlayInfo(const std::string& keyword, const std::string& source) {
     PlayInfo play_info;
     std::vector<MusicInfo> results = MusicSearch::Search(keyword);

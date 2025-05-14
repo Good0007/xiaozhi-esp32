@@ -263,6 +263,8 @@ private:
         thing_manager.AddThing(iot::CreateThing("Screen"));
         //注册RadioPlayer TODO
         thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
+        // 注册在线播放器
+        thing_manager.AddThing(iot::CreateThing("OnlineMp3Player"));
         //注册Switcher
         //thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));

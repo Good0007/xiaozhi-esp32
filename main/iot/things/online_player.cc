@@ -25,7 +25,7 @@ public:
         }), [this](const ParameterList& parameters) -> std::string {
                 std::string keyword = parameters["keyword"].string();
                 ESP_LOGI(TAG, "搜索音乐: %s", keyword.c_str());
-                PlayInfo play_info = MusicSearch::getPlayInfo(keyword);
+                PlayInfo play_info = MusicSearch::getRandomPlayInfo(keyword);
                 if (!play_info.url.empty()) {
                     auto& app = Application::GetInstance();
                     ESP_LOGI(TAG, "根据名称搜索歌曲: name = %s, url = %s",play_info.name.c_str(), play_info.url.c_str());
