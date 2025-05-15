@@ -168,7 +168,7 @@ std::vector<PlayInfo> MusicSearch::GetPlayList(const std::string& keyword,int li
 }
 
 PlayInfo MusicSearch::getRandomPlayInfo(const std::string& keyword, const std::string& source) {
-    std::vector<MusicInfo> results = MusicSearch::Search(keyword, 20, 1, source);
+    std::vector<MusicInfo> results = MusicSearch::Search(keyword, 20, 1);
     if (results.empty()) {
         ESP_LOGI("getRandomPlayInfo", "No results found for keyword: %s", keyword.c_str());
         return PlayInfo{};
@@ -180,6 +180,7 @@ PlayInfo MusicSearch::getRandomPlayInfo(const std::string& keyword, const std::s
         int idx = rand() % results.size();
         const MusicInfo& info = results[idx];
         PlayInfo play_info;
+        play_info.id = info.id;
         play_info.name = info.name;
         play_info.tag = 0; // 音乐
         play_info.url = MusicSearch::GetPlayUrl(info.id, info.source);
@@ -197,7 +198,7 @@ PlayInfo MusicSearch::getRandomPlayInfo(const std::string& keyword, const std::s
 
 PlayInfo MusicSearch::getPlayInfo(const std::string& keyword, const std::string& source) {
     PlayInfo play_info;
-    std::vector<MusicInfo> results = MusicSearch::Search(keyword);
+    std::vector<MusicInfo> results = MusicSearch::Search(keyword, 5, 1, source);
     if (!results.empty()) {
         play_info.name = results[0].name;
         play_info.url = MusicSearch::GetPlayUrl(results[0].id);

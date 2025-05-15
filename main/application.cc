@@ -25,6 +25,7 @@
 #include "audio_codecs/mp3_decoder_wrapper.h"
 #include "http/http_net_stream.h"
 #include "http/raing_buffer.h"
+#include "online_music.h"
 
 #define TAG "Application"
 
@@ -295,35 +296,83 @@ void Application::StopPlaying() {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
+void Application::ClearPlayList() {
+    ESP_LOGI(TAG, "Clear play list");
+    std::unique_lock<std::mutex> lock(mutex_);
+    playing_type_ = PlayingType::None;
+    play_list_.clear();
+    current_play_index_ = -1;
+}
 
-void Application::changePlaying(PlayingType type, PlayInfo &play_info) {
+void Application::AddToPlayList(PlayInfo &play_info) {
+    play_list_.emplace_back(play_info);
+    //屏幕上打印出来 1. 歌曲名称 数字从当前播放列表获取size
+    auto display = Board::GetInstance().GetDisplay();
+    int idx = play_list_.size();
+    std::string msg = "加入播放: " + std::to_string(idx) + "." + play_info.name;
+    display->SetChatMessage("system", msg.c_str());
+    ESP_LOGI(TAG, "Add to play list: %s", play_info.name.c_str());
+}
+
+void Application::StartPlaying() {
+    ESP_LOGI(TAG, "Start playing");
     {
         std::unique_lock<std::mutex> lock(mutex_);
         playing_type_ = PlayingType::None; // 通知播放循环退出
     }
     background_task_->WaitForCompletion();
-    vTaskDelay(pdMS_TO_TICKS(500));  
-    ESP_LOGI(TAG, "Change playing type: %d, url: %s", (int)type, play_info.url.c_str());
+    vTaskDelay(pdMS_TO_TICKS(500));
     {
         std::unique_lock<std::mutex> lock(mutex_);
         audio_decode_cv_.wait(lock, [this] {
             return audio_decode_queue_.empty();
         });
         SetDeviceState(kDeviceStateIdle);
-        this->current_playing_url_ = play_info.url;
-        //转成list
+        playing_type_ = PlayingType::Mp3Stream;
+    }
+}
+
+
+void Application::ChangePlaying(PlayingType type, std::vector<PlayInfo> &play_list) {
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        playing_type_ = PlayingType::None; // 通知播放循环退出
+    }
+    background_task_->WaitForCompletion();
+    vTaskDelay(pdMS_TO_TICKS(500));  
+    ESP_LOGI(TAG, "Change playing type: %d, url: %s", (int)type, play_list[0].url.c_str());
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        audio_decode_cv_.wait(lock, [this] {
+            return audio_decode_queue_.empty();
+        });
+        SetDeviceState(kDeviceStateIdle);
+        this->current_play_index_ = -1;
         this->play_list_.clear();
-        this->play_list_.push_back(play_info);
+        for (const auto& play_info : play_list) {
+            this->play_list_.emplace_back(play_info);
+        }
         playing_type_ = type;
     }
-
 }
 
 
 void Application::PlayOnlineList() {
     //循环播放列表 循环 play_list_ 调用 playStream播放全部歌曲
+    this->current_play_index_ = -1;
     for (const auto& play_info : play_list_) {
-        if (play_info.url.empty()) {
+        if (playing_type_!= PlayingType::Mp3Stream) {
+            ESP_LOGI(TAG, "Play list end");
+            break;
+        }
+        PlayInfo info_ = const_cast<PlayInfo&>(play_info);
+        this->current_play_index_++;
+        if (info_.url.empty() and info_.id > 0) {
+            //获取url
+            std::string url_ = MusicSearch::GetPlayUrl(play_info.id);
+            info_.url = url_;
+        }
+        if (info_.url.empty()) {
             ESP_LOGW(TAG, "Empty URL in play list");
             continue;
         }
@@ -331,7 +380,14 @@ void Application::PlayOnlineList() {
             ESP_LOGW(TAG, "Not in MP3 stream mode, aborting playback");
             break;
         }
-        PlayStream(const_cast<PlayInfo&>(play_info));
+        PlayStream(info_);
+    }
+    //播放完成，清空播放列表
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        playing_type_ = PlayingType::None;
+        play_list_.clear();
+        current_play_index_ = -1;
     }
 }
 
@@ -914,7 +970,7 @@ void Application::AudioLoop() {
 // Playing audio Loop
 void Application::PlayingLoop() {
     while (true) {
-        if (current_playing_url_.empty() or playing_type_ != PlayingType::Mp3Stream) {
+        if (playing_type_ != PlayingType::Mp3Stream) {
             //ESP_LOGI(TAG, "Waiting for audio stream...");
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;

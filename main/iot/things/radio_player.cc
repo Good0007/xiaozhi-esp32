@@ -48,7 +48,9 @@ public:
                 auto& app = Application::GetInstance();
                 PlayInfo play_info_ = radio_.getPlayInfo(name); 
                 ESP_LOGI(TAG, "根据名称模糊查找频道id: name = %s, url = %s",play_info_.name.c_str(), play_info_.url.c_str());
-                app.changePlaying(PlayingType::Mp3Stream, play_info_);
+                //传入list集合
+                std::vector<PlayInfo> play_list{play_info_};
+                app.ChangePlaying(PlayingType::Mp3Stream, play_list);
                 // 在主线程上下文执行播放操作
                 //app.PlayMp3Stream();
                 //return true;

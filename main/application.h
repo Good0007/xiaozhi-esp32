@@ -54,6 +54,8 @@ enum DeviceState {
 
 //创建playInfo对象，保存播放信息（名称、url）
 struct PlayInfo {
+    //id
+    int id = 0;
     std::string name;
     std::string url = "";
     uint8_t tag = 0;  // 0: 音乐 1 : 新闻 2: 交通 3: 财经
@@ -89,9 +91,17 @@ public:
     void PlaySound(const std::string_view& sound);
     bool CanEnterSleepMode();
     //传入类型和地址
-    void changePlaying(PlayingType type, PlayInfo &play_info);
+    void ChangePlaying(PlayingType type, std::vector<PlayInfo> &play_list);
+    //开始播放
+    void StartPlaying();
+    //加入到播放列表
+    void AddToPlayList(PlayInfo &play_info);
+    //清空播放列表
+    void ClearPlayList();
     //停止播放
     void StopPlaying();
+    //获取播放列表
+    std::vector<PlayInfo> GetPlayList() const { return play_list_; }
     void ProcessDecodedPcmData(std::vector<int16_t>& pcm_data);
     void PlayLocalAudio();
     void PlayOnlineList();
@@ -156,8 +166,8 @@ private:
     void AudioLoop();
     void PlayingLoop();
 
-    //当前播放地址 
-    std::string current_playing_url_;
+    //当前播放索引
+    int current_play_index_ = -1;
     //播放列表
     std::vector<PlayInfo> play_list_;
 };

@@ -19,7 +19,8 @@ public:
     static std::vector<MusicInfo> Search(
         const std::string& keyword, 
         int count = 10, int page = 1, 
-        const std::string& source = "netease_album");
+        //netease_album 专辑， netease 歌手
+        const std::string& source = "netease");
 
     // 搜索音乐，获取一个播放列表
     static std::vector<PlayInfo> GetPlayList(
