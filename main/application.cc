@@ -307,10 +307,6 @@ void Application::ClearPlayList() {
 void Application::AddToPlayList(PlayInfo &play_info) {
     play_list_.emplace_back(play_info);
     //屏幕上打印出来 1. 歌曲名称 数字从当前播放列表获取size
-    auto display = Board::GetInstance().GetDisplay();
-    int idx = play_list_.size();
-    std::string msg = "加入播放: " + std::to_string(idx) + "." + play_info.name;
-    display->SetChatMessage("system", msg.c_str());
     ESP_LOGI(TAG, "Add to play list: %s", play_info.name.c_str());
 }
 
@@ -433,6 +429,10 @@ void Application::PlayStream(PlayInfo &play_info) {
                 continue;
             } else {
                 ESP_LOGI(TAG, "Stream ended");
+                break;
+            }
+            if (consecutive_errors > 20) {
+                ESP_LOGE(TAG, "Too many consecutive read errors, stopping playback");
                 break;
             }
             //首次读取，多缓冲一些数据,8k

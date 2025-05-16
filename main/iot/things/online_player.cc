@@ -1,5 +1,6 @@
 #include "iot/thing.h"
 #include "board.h"
+#include "display/display.h"
 #include <esp_log.h>
 #include "audio_codec.h"
 #include "application.h"
@@ -43,13 +44,20 @@ public:
                 //循环搜索结果，拼接成一个List结果
                 ESP_LOGI(TAG, "musicSearch: 找到 %s 首音乐！", std::to_string(misuc_list_.size()).c_str());
                 auto& app = Application::GetInstance();
+                Display* display = Board::GetInstance().GetDisplay();
                 //循环加入到播放列表
+                display->SetChatMessage("assistant", "找到以下歌曲:");
                 app.ClearPlayList();
+                int idx = 0;
                 for (const auto& music : misuc_list_) {
                     PlayInfo info;
                     info.id = music.id;
                     info.name = music.name;
+                    std::string msg = std::to_string(idx++) + ". " + info.name;
+                    display->SetChatMessage("assistant", msg.c_str());
                     app.AddToPlayList(info);
+                    //休眠50ms
+                    vTaskDelay(pdMS_TO_TICKS(50));
                 }
                 ESP_LOGI(TAG, "musicSearch: 搜索结果 %d", misuc_list_.size());
                 return std::to_string(misuc_list_.size()) + "首加入到播放列表,第一首:" + misuc_list_[0].name;
