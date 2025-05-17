@@ -154,6 +154,8 @@ choice BOARD_TYPE
         bool "xiaojun-box"
     config BOARD_TYPE_AMOUR_K08
         bool "amour-k08"
+    config BOARD_TYPE_AMOUR_K08V2
+        bool "amour-k08v2"
     config BOARD_TYPE_ESP_S3_LCD_EV_Board
         bool "乐鑫ESP S3 LCD EV Board开发板"
 endchoice
@@ -185,9 +187,9 @@ choice DISPLAY_OLED_TYPE
 endchoice
 
 choice DISPLAY_LCD_TYPE
-    depends on BOARD_TYPE_BREAD_COMPACT_WIFI_LCD || BOARD_TYPE_BREAD_COMPACT_ESP32_LCD || BOARD_TYPE_ESP32_CGC || BOARD_TYPE_AMOUR_K08
+    depends on BOARD_TYPE_BREAD_COMPACT_WIFI_LCD || BOARD_TYPE_BREAD_COMPACT_ESP32_LCD || BOARD_TYPE_ESP32_CGC || BOARD_TYPE_AMOUR_K08 || BOARD_TYPE_AMOUR_K08V2
     prompt "LCD Type"
-    default LCD_ST7789_240X240_7PIN
+    default LCD_ST7789_240X240
     help
         屏幕类型选择
     config LCD_ST7789_240X320

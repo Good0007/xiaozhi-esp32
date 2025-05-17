@@ -58,6 +58,10 @@ Led* Board::GetLed() {
     return &led;
 }
 
+void Board::PowerOff(){
+    return;
+}
+
 std::string Board::GetJson() {
     /* 
         {

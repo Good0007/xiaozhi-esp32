@@ -170,6 +170,9 @@ elseif(CONFIG_BOARD_TYPE_XIAOJUN_BOX)
 elseif(CONFIG_BOARD_TYPE_AMOUR_K08)
     # 小智ESP32-S3音响
     set(BOARD_TYPE "amour-k08")
+elseif(CONFIG_BOARD_TYPE_AMOUR_K08V2)
+    # 小智ESP32-S3音响v2
+    set(BOARD_TYPE "amour-k08v2")
 elseif(CONFIG_BOARD_TYPE_ESP_S3_LCD_EV_Board)
     set(BOARD_TYPE "esp-s3-lcd-ev-board")
 endif()

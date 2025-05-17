@@ -27,6 +27,10 @@ public:
         properties_.AddBooleanProperty("charging", "是否充电中", [this]() -> int {
             return charging_;
         });
+        methods_.AddMethod("poweoff", "关闭系统电源[警告:此操作将导致设备完全关闭，请慎重使用]", ParameterList(), [this](const ParameterList& parameters) {
+            auto& board = Board::GetInstance();
+            board.PowerOff();
+        });
     }
 };
 

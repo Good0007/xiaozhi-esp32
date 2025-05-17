@@ -53,7 +53,12 @@ public:
                     PlayInfo info;
                     info.id = music.id;
                     info.name = music.name;
-                    msg += std::to_string(idx++) + ". " + info.name + "\n";
+                    //最后一个不加\n
+                    if (idx == misuc_list_.size() - 1) {
+                        msg += std::to_string(idx++) + ". " + info.name;
+                    } else {
+                        msg += std::to_string(idx++) + ". " + info.name + "\n";
+                    }
                     //display->SetChatMessage("assistant", msg.c_str());
                     app.AddToPlayList(info);
                 }
