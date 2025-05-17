@@ -38,7 +38,10 @@ enum class PlayingType {
     Mp3Stream,
     LocalAudio
 };
-
+enum class PlayMode {
+    Sequence = 0,
+    Random = 1
+};
 enum DeviceState {
     kDeviceStateUnknown,
     kDeviceStateStarting,
@@ -93,7 +96,7 @@ public:
     //传入类型和地址
     void ChangePlaying(PlayingType type, std::vector<PlayInfo> &play_list);
     //开始播放
-    void StartPlaying();
+    void StartPlaying(PlayMode mode = PlayMode::Sequence, int start_index = 0);
     //加入到播放列表
     void AddToPlayList(PlayInfo &play_info);
     //清空播放列表
@@ -168,6 +171,8 @@ private:
 
     //当前播放索引
     int current_play_index_ = -1;
+    int start_play_index_ = 0;
+    PlayMode play_mode_ = PlayMode::Sequence;
     //播放列表
     std::vector<PlayInfo> play_list_;
 };

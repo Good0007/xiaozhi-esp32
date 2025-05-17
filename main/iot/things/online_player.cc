@@ -12,7 +12,7 @@ namespace iot {
 // 这里仅定义 AadioPlayer 的属性和方法，不包含具体的实现
 class OnlineMp3Player : public Thing {
 public:
-    OnlineMp3Player() : Thing("OnlineMp3Player", "音乐播放器：支持搜索音乐、指定音乐名称播放、指定歌手|专辑|关键字播放") {
+    OnlineMp3Player() : Thing("OnlineMp3Player", "音乐播放器：支持搜索音乐、指定音乐名称播放、指定歌手|专辑|关键字播放（当用户需要听歌优先从这里搜索！）") {
         properties_.AddStringProperty("musicState", "播放器状态：0 空闲 1 播放中", [this]() -> std::string {
             auto& app = Application::GetInstance();
             std::string state_ = (app.GetPlayingType() == PlayingType::Mp3Stream ? "1" : "0");
@@ -46,34 +46,48 @@ public:
                 auto& app = Application::GetInstance();
                 Display* display = Board::GetInstance().GetDisplay();
                 //循环加入到播放列表
-                display->SetChatMessage("assistant", "找到以下歌曲:");
+                std::string msg = "找到以下歌曲:\n";
                 app.ClearPlayList();
                 int idx = 0;
                 for (const auto& music : misuc_list_) {
                     PlayInfo info;
                     info.id = music.id;
                     info.name = music.name;
-                    std::string msg = std::to_string(idx++) + ". " + info.name;
-                    display->SetChatMessage("assistant", msg.c_str());
+                    msg += std::to_string(idx++) + ". " + info.name + "\n";
+                    //display->SetChatMessage("assistant", msg.c_str());
                     app.AddToPlayList(info);
-                    //休眠50ms
-                    vTaskDelay(pdMS_TO_TICKS(50));
                 }
+                display->SetChatMessage("assistant", msg.c_str());
                 ESP_LOGI(TAG, "musicSearch: 搜索结果 %d", misuc_list_.size());
                 return std::to_string(misuc_list_.size()) + "首加入到播放列表,第一首:" + misuc_list_[0].name;
         });
 
         
         methods_.AddMethod("startPlay", "开始播放（如果播放列表就绪，调用开始播放）",  ParameterList({
-            Parameter("keyword", "搜索关键字：可以是音乐名称/歌手等", kValueTypeString, true)
+            //播放模式
+            Parameter("model", "播放模式：0 顺序播放 1 随机播放", kValueTypeNumber, false),
+            Parameter("start", "播放第几首:默认从0开始", kValueTypeNumber, false)
         }), [this](const ParameterList& parameters) {
+                int start = parameters["start"].number();
+                int model = parameters["model"].number();
+                if (model < 0 || model > 1) {
+                    model = 0;
+                }
+                if (start < 0) {
+                    start = 0;
+                }
                 auto& app = Application::GetInstance();
                 std::vector<PlayInfo> play_list_ = app.GetPlayList();
                 if (play_list_.empty()) {
                     return "播放列表为空!";
                 } 
+                if (start >= play_list_.size()) {
+                    start = 0;
+                }
+                ESP_LOGI(TAG, "startPlay: model = %d,start = %d, size = %d",model, start, play_list_.size());
+                PlayMode mode_ = static_cast<PlayMode>(model);
                 ESP_LOGI(TAG, "startPlay: %s", play_list_[0].name.c_str());
-                app.StartPlaying();
+                app.StartPlaying(mode_,start);
                 return "开始播放";
         });
 

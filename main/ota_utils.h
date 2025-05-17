@@ -7,6 +7,13 @@
 
 class OtaUtils {
     public:
+        static void print_task_stats() {
+            char buffer[1024];
+            //vTaskList(buffer);
+            //printf("Task Name\tState\tPrio\tStack\tNum\tCore\n%s\n", buffer);
+            vTaskGetRunTimeStats(buffer);
+            printf("Task Name\tTime\tPercent\n%s\n", buffer);
+        }
         static void SwitchToOtherApp(Display* display = nullptr) {
             const esp_partition_t *running = esp_ota_get_running_partition();
             const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);

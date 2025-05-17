@@ -6,15 +6,20 @@
 
 class EspHttpNetworkStream : public NetworkStream {
 public:
-    explicit EspHttpNetworkStream(esp_http_client_handle_t handle) : handle_(handle) {}
+    explicit EspHttpNetworkStream(esp_http_client_handle_t handle, int64_t content_length)
+        : handle_(handle), content_length_(content_length) {}
+    
     ~EspHttpNetworkStream() override {
         if (handle_) esp_http_client_cleanup(handle_);
     }
+
     int Read(uint8_t* buf, size_t len) override {
         if (!handle_) return -1;
         int ret = esp_http_client_read(handle_, (char*)buf, len);
         return ret;
     }
+    int64_t GetContentLength() const override { return content_length_; }
+
     void Close() override {
         if (handle_) {
             esp_http_client_close(handle_);
@@ -24,6 +29,7 @@ public:
     }
 private:
     esp_http_client_handle_t handle_;
+    int64_t content_length_ = 0;
 };
 
 std::unique_ptr<NetworkStream> OpenNetworkStream(const std::string& url) {
@@ -31,7 +37,7 @@ std::unique_ptr<NetworkStream> OpenNetworkStream(const std::string& url) {
     config.url = url.c_str();
     config.method = HTTP_METHOD_GET;
     config.timeout_ms = 10000;
-    config.buffer_size = 4096 * 4;  // 增加缓冲区大小
+    config.buffer_size = 4096 * 8;  // 增加缓冲区大小
     config.is_async = false;    // 确保同步模式
     config.disable_auto_redirect = false;
     //判断如果是https协议则使用证书捆绑 
@@ -81,5 +87,5 @@ std::unique_ptr<NetworkStream> OpenNetworkStream(const std::string& url) {
     }
 
     ESP_LOGI("EspHttpNetworkStream", "Stream opened successfully");
-    return std::make_unique<EspHttpNetworkStream>(client);
+    return std::make_unique<EspHttpNetworkStream>(client, content_length);
 }

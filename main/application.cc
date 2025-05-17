@@ -26,6 +26,9 @@
 #include "http/http_net_stream.h"
 #include "http/raing_buffer.h"
 #include "online_music.h"
+#include "ota_utils.h"
+#include <numeric>
+#include <random>
 
 #define TAG "Application"
 
@@ -310,14 +313,16 @@ void Application::AddToPlayList(PlayInfo &play_info) {
     ESP_LOGI(TAG, "Add to play list: %s", play_info.name.c_str());
 }
 
-void Application::StartPlaying() {
-    ESP_LOGI(TAG, "Start playing");
+void Application::StartPlaying(PlayMode mode, int start_index) {
+    ESP_LOGI(TAG, "Start playing: %d", start_index);
     {
         std::unique_lock<std::mutex> lock(mutex_);
         playing_type_ = PlayingType::None; // 通知播放循环退出
     }
     background_task_->WaitForCompletion();
     vTaskDelay(pdMS_TO_TICKS(500));
+    play_mode_ = mode;
+    start_play_index_ = start_index;
     {
         std::unique_lock<std::mutex> lock(mutex_);
         audio_decode_cv_.wait(lock, [this] {
@@ -354,19 +359,32 @@ void Application::ChangePlaying(PlayingType type, std::vector<PlayInfo> &play_li
 
 
 void Application::PlayOnlineList() {
-    //循环播放列表 循环 play_list_ 调用 playStream播放全部歌曲
-    this->current_play_index_ = -1;
-    for (const auto& play_info : play_list_) {
-        if (playing_type_!= PlayingType::Mp3Stream) {
+    if (play_list_.empty()) return;
+
+    std::vector<int> play_order(play_list_.size());
+    std::iota(play_order.begin(), play_order.end(), 0);
+
+    // 随机播放时打乱顺序
+    if (play_mode_ == PlayMode::Random) {
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(play_order.begin(), play_order.end(), g);
+    }
+
+    // 从第n首开始
+    int begin_idx = std::clamp(start_play_index_, 0, (int)play_list_.size() - 1);
+
+    // 顺序播放时直接从begin_idx开始，随机播放时从begin_idx对应的随机序列开始
+    for (size_t i = begin_idx; i < play_order.size(); ++i) {
+        int idx = play_order[i];
+        if (playing_type_ != PlayingType::Mp3Stream) {
             ESP_LOGI(TAG, "Play list end");
             break;
         }
-        PlayInfo info_ = const_cast<PlayInfo&>(play_info);
-        this->current_play_index_++;
-        if (info_.url.empty() and info_.id > 0) {
-            //获取url
-            std::string url_ = MusicSearch::GetPlayUrl(play_info.id);
-            info_.url = url_;
+        PlayInfo info_ = play_list_[idx];
+        current_play_index_ = idx;
+        if (info_.url.empty() && info_.id > 0) {
+            info_.url = MusicSearch::GetPlayUrl(info_.id);
         }
         if (info_.url.empty()) {
             ESP_LOGW(TAG, "Empty URL in play list");
@@ -378,13 +396,20 @@ void Application::PlayOnlineList() {
         }
         PlayStream(info_);
     }
-    //播放完成，清空播放列表
+    //播放完成
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetEmotion("neutral");
+    //输出 x首歌已经播放完成啦
+    std::string message = std::to_string(play_list_.size()) + "首歌已经播放完成啦";
+    display->SetChatMessage("assistant", message.c_str());
+    // 播放完成，清空播放列表
     {
         std::unique_lock<std::mutex> lock(mutex_);
         playing_type_ = PlayingType::None;
         play_list_.clear();
         current_play_index_ = -1;
     }
+
 }
 
 void Application::PlayStream(PlayInfo &play_info) {
@@ -396,7 +421,7 @@ void Application::PlayStream(PlayInfo &play_info) {
      auto codec = Board::GetInstance().GetAudioCodec();
     int output_sample_rate_ = codec->output_sample_rate();
     // 创建缓冲区和解码器
-    std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(16 * 1024);
+    std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(32 * 1024);
     std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>(output_sample_rate_);
     auto stream = OpenNetworkStream(url);
     if (!stream) {
@@ -406,39 +431,49 @@ void Application::PlayStream(PlayInfo &play_info) {
         return;
     }
     //休眠一段时间，等待缓冲
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(500));
     const size_t READ_BUFFER_SIZE = 4096;
     std::vector<uint8_t> temp_buffer(READ_BUFFER_SIZE);
     std::vector<int16_t> pcm_buffer;
     pcm_buffer.reserve(4096);
-
+    int64_t content_length = stream->GetContentLength();
+    int64_t read_bytes_sum = 0;
     int consecutive_errors = 0;
     try {
-                //设置首次缓冲标志位
+        //设置首次缓冲标志位
         bool first_buffer = true;
         while (playing_type_== PlayingType::Mp3Stream) {
             // 读取网络数据
             int read_bytes = stream->Read(temp_buffer.data(), temp_buffer.size());
             if (read_bytes > 0) {
+                if (content_length > 0) {
+                    read_bytes_sum += read_bytes;
+                    if (read_bytes_sum > content_length) {
+                        ESP_LOGW(TAG, "Read bytes exceed content length, stopping playback");
+                        break;
+                    }
+                }
                 ring_buffer->Write(temp_buffer.data(), read_bytes);
                 consecutive_errors = 0;
                 //ESP_LOGI(TAG, "Read %d bytes from stream", read_bytes);
             } else if (read_bytes == 0) {
                 consecutive_errors++;
-                vTaskDelay(pdMS_TO_TICKS(100));
+                ESP_LOGW(TAG, "Read 0 bytes from stream, consecutive errors: %d", consecutive_errors);
+                if (consecutive_errors > 10) {
+                    ESP_LOGE(TAG, "Too many consecutive read errors, stopping playback");
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             } else {
                 ESP_LOGI(TAG, "Stream ended");
                 break;
             }
-            if (consecutive_errors > 20) {
-                ESP_LOGE(TAG, "Too many consecutive read errors, stopping playback");
-                break;
-            }
+            
             //首次读取，多缓冲一些数据,8k
             if (first_buffer) {
                 //跳过
-                if (ring_buffer->Size() < 8 * 1024) {
+                if (ring_buffer->Size() < 20 * 1024) {
                     //跳过循环
                     continue;
                 } else {
@@ -496,6 +531,8 @@ void Application::PlayStream(PlayInfo &play_info) {
                     ProcessDecodedPcmData(pcm_buffer);
                 }
             }
+            //打印当前缓冲区大小，提示等待缓冲
+            ESP_LOGI(TAG, "Buffer size: %zu bytes, waiting for more data...", ring_buffer->Size());
         }
     } catch (const std::exception& e) {
         ESP_LOGE(TAG, "Exception in PlayOnlineStream: %s", e.what());
@@ -513,23 +550,10 @@ void Application::PlayStream(PlayInfo &play_info) {
 
 constexpr size_t OPTIMAL_WRITE_SAMPLES = 240; // 10ms@24kHz
 
-// 48kHz → 24kHz 2:1 降采样（丢弃一半样本或做均值）：
-std::vector<int16_t> Downsample2x(const std::vector<int16_t>& input) {
-    std::vector<int16_t> output;
-    output.reserve(input.size() / 2);
-    for (size_t i = 0; i + 1 < input.size(); i += 2) {
-        // 简单平均，减少高频失真
-        output.push_back((input[i] / 2) + (input[i + 1] / 2));
-    }
-    return output;
-}
-
 // 添加辅助函数处理解码后的PCM数据
 void Application::ProcessDecodedPcmData(std::vector<int16_t>& pcm_data) {
     auto codec = Board::GetInstance().GetAudioCodec();
-    //std::vector<int16_t> resampled = Downsample2x(pcm_data);
     size_t offset = 0;
-    //ESP_LOGI(TAG, "Resampled %zu samples", resampled.size());
     while (offset < pcm_data.size()) {
         size_t chunk_size = std::min(OPTIMAL_WRITE_SAMPLES, pcm_data.size() - offset);
         std::vector<int16_t> chunk(pcm_data.begin() + offset, 
@@ -907,7 +931,9 @@ void Application::OnClockTimer() {
         int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
         ESP_LOGI(TAG, "Free internal: %u minimal internal: %u", free_sram, min_free_sram);
-
+        // 打印任务统计
+        OtaUtils::print_task_stats();
+        
         // If we have synchronized server time, set the status to clock "HH:MM" if the device is idle
         if (ota_.HasServerTime()) {
             if (device_state_ == kDeviceStateIdle) {
