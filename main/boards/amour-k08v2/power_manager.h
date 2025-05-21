@@ -4,7 +4,7 @@
 #include <esp_attr.h>
 #include <esp_timer.h>
 #include <esp_intr_alloc.h>
-#include "max17043.h"
+#include "cw2015.h"
 
 class PowerManager {
 private:
@@ -14,7 +14,7 @@ private:
 
     gpio_num_t charging_pin_ = GPIO_NUM_NC; // 充电状态检测引脚
     gpio_num_t power_hold_pin_ = GPIO_NUM_NC; // 电源保持引脚
-    Max17043* max_17043_ = nullptr; // 电池电量sensor
+    Cw2015* soc_sensor_ = nullptr; // 电池电量sensor
     bool is_charging_ = false; // 充电状态标志
     bool is_discharging_ = false; //充满状态标志
     int64_t last_high_time_ = 0; // 最后高电平时间

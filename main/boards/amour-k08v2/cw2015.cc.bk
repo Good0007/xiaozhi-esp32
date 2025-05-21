@@ -1,0 +1,71 @@
+#include "cw2015.h"
+#include <esp_log.h>
+
+Cw2015::Cw2015(i2c_master_bus_handle_t i2c_bus, uint8_t addr)
+    : I2cDevice(i2c_bus, addr) {}
+
+int Cw2015::get_ic_version() {
+    uint8_t ver = 0;
+    ReadRegs(CW2015_REG_VERSION, &ver, 1);
+    return ver;
+}
+
+float Cw2015::get_cell_voltage() {
+    uint8_t buf[2] = {0};
+    ReadRegs(CW2015_REG_VCELL_H, buf, 2);
+    uint16_t vcell = ((uint16_t)buf[0] << 8) | buf[1];
+    // CW2015电压单位: 305uV/bit
+    return vcell * 0.305f / 1000.0f;
+}
+
+float Cw2015::get_cell_percent() {
+    uint8_t buf[2] = {0};
+    ReadRegs(CW2015_REG_SOC_H, buf, 2);
+    uint16_t soc = ((uint16_t)buf[0] << 8) | buf[1];
+    float percent = buf[0] + buf[1] / 256.0f;
+    ESP_LOGI("Cw2015", "SOC_H: %d, SOC_L: %d", buf[0], buf[1]);
+    ESP_LOGI("Cw2015", "Version: %d", get_ic_version());
+    return percent;
+}
+
+void Cw2015::reset() {
+    uint8_t mode = 0;
+    ReadRegs(CW2015_REG_MODE, &mode, 1);
+    mode |= 0x0F; // 设置POR复位位
+    WriteRegs(CW2015_REG_MODE, &mode, 1);
+}
+
+
+void Cw2015::quick_start() {
+    uint8_t mode = 0;
+    ReadRegs(CW2015_REG_MODE, &mode, 1);
+    mode |= 0x30; // QSTRT写11
+    WriteRegs(CW2015_REG_MODE, &mode, 1);
+}
+
+
+void Cw2015::sleep() {
+    uint8_t mode = 0;
+    ReadRegs(CW2015_REG_MODE, &mode, 1);
+    mode |= 0xC0; // SLEEP写11
+    WriteRegs(CW2015_REG_MODE, &mode, 1);
+}
+
+void Cw2015::wakeup() {
+    uint8_t mode = 0;
+    ReadRegs(CW2015_REG_MODE, &mode, 1);
+    mode &= ~0xC0; // SLEEP写00
+    WriteReg(CW2015_REG_MODE, mode); // 只写一个寄存器，直接用WriteReg
+}
+
+bool Cw2015::check_batinfo() {
+    uint8_t config = 0;
+    ReadRegs(CW2015_REG_CONFIG, &config, 1);
+    if (config & 0x02) {
+        ESP_LOGI("Cw2015", "UFG bit is set, battery information is valid.");
+        return true;
+    } else {
+        ESP_LOGI("Cw2015", "UFG bit is not set, battery information is invalid.");
+        return false;
+    }
+}

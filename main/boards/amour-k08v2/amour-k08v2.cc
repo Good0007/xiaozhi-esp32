@@ -138,10 +138,10 @@ private:
     void InitializeI2c() {
         // Initialize I2C peripheral
         i2c_master_bus_config_t i2c_bus_cfg = {
-            .i2c_port = (i2c_port_t)0,
+            .i2c_port = EXTERN_I2C_MASTER_NUM,
             .sda_io_num = EXTERN_I2C_SDA_PIN,
             .scl_io_num = EXTERN_I2C_SCL_PIN,
-            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .clk_source = I2C_CLK_SRC_DEFAULT
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
@@ -324,6 +324,7 @@ private:
         thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
         // 注册在线播放器
         thing_manager.AddThing(iot::CreateThing("OnlineMp3Player"));
+        thing_manager.AddThing(iot::CreateThing("Battery"));
         //注册Switcher
         //thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
@@ -338,7 +339,7 @@ public:
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO),
         model_button_(MODEL_BUTTON_GPIO)
         {
-        //InitializePowerSaveTimer();
+        InitializePowerSaveTimer();
         InitializeSpi();
         //初始化I2C
         InitializeI2c();

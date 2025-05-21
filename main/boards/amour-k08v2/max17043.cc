@@ -11,7 +11,7 @@ int Max17043::get_ic_version() {
 
 esp_err_t Max17043::rest() {
     uint8_t buf[2] = {0x54, 0x00};
-      WriteRegs(MAX17048_CMD_REG, buf, 2);
+    WriteRegs(MAX17048_CMD_REG, buf, 2);
      
     return ESP_OK;
 }
