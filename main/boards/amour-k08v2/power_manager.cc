@@ -45,7 +45,11 @@ void PowerManager::CheckBatteryLevel() {
 void PowerManager::CheckChargingStatus() {
     int64_t current_time = esp_timer_get_time();
     int pin_level = gpio_get_level(charging_pin_);
-    
+     #if USE_BATTERY_GAUGE_SENSOR
+     //打印电压信息
+    //int voltage = soc_sensor_->getVoltage();
+    //ESP_LOGI(TAG, "Battery Level: %d%%, Voltage: %d mV", battery_level_, voltage);
+     #endif
     //检查电池电量
     CheckBatteryLevel();
     // 每20秒输出一个50ms的高电平
