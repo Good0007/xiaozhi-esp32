@@ -45,10 +45,10 @@ static const uint8_t cw_bat_config_info[SIZE_BATINFO] = {
 
 // 电池信息结构体
 typedef struct {
-    uint8_t usb_online;
-    uint32_t capacity;
-    uint32_t voltage;
-    uint8_t alt;
+    uint8_t usb_online; // USB在线状态
+    uint32_t capacity; // 电池容量
+    uint32_t voltage; // 电池电压
+    uint8_t alt; // 剩余运行时间报警标志
 } CW_Battery;
 
 class Cw2015 : public I2cDevice{
@@ -67,8 +67,9 @@ public:
     bool updateVoltage();
     bool releaseAlert();
     // 获取电池 get_cell_percent
-    float get_cell_percent();
-
+    float getCellPercent();
+    bool WriteReg(uint8_t reg, uint8_t value);
+    bool ReadReg(uint8_t reg, uint8_t* value);
     CW_Battery battery;
 
 private:

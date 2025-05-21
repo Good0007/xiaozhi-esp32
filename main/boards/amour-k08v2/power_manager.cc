@@ -31,7 +31,7 @@ void PowerManager::send_power_hodle_pulse(){
 
 void PowerManager::CheckBatteryLevel() {
     #if USE_BATTERY_GAUGE_SENSOR
-    int battery_level = soc_sensor_->get_cell_percent();
+    int battery_level = soc_sensor_->getCapacity();
     // 限制电池电量范围在0-100之间
     if (battery_level > 100) battery_level = 100;
     if (battery_level < 0) battery_level = 0; 
@@ -86,7 +86,6 @@ PowerManager::PowerManager(gpio_num_t charging_pin, gpio_num_t power_hold_pin, i
     : charging_pin_(charging_pin), power_hold_pin_(power_hold_pin) {
     #if USE_BATTERY_GAUGE_SENSOR
     soc_sensor_ = new Cw2015(i2c_bus, CW2015_ADDR);
-    //唤醒
     soc_sensor_->config();
     #endif
     // 初始化充电引脚

@@ -235,14 +235,34 @@ bool Cw2015::updateVoltage() {
 }
 
 //get_cell_percent float
-float Cw2015::get_cell_percent() {
-    uint8_t reg_val[2];
-    if (!ReadReg(REG_SOC, &reg_val[0])) return -1;
-    if (!ReadReg(REG_SOC + 1, &reg_val[1])) return -1;
-    int16_t result = (int16_t)((reg_val[0] << 8) | reg_val[1]);
-    float percent = (float)(result) / 256.0f;                                                /*!< Unit is 1%/256 */
+float Cw2015::getCellPercent() {
+    int capacity = getCapacity();
+    if (capacity < 0) {
+        return 0.0f;
+    }
+    // 计算百分比（范围0~100）
+    float percent = (float)capacity;
+    if (percent > 100.0f) percent = 100.0f;
+    if (percent < 0.0f) percent = 0.0f;
     return percent;
 }
 
+// ...existing code...
+bool Cw2015::WriteReg(uint8_t reg, uint8_t value) {
+    try {
+        I2cDevice::WriteReg(reg, value);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
+bool Cw2015::ReadReg(uint8_t reg, uint8_t* value) {
+    try {
+        *value = I2cDevice::ReadReg(reg);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
