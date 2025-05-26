@@ -311,7 +311,7 @@ private:
         volume_down_button_.OnLongPress([this]() {
             ESP_LOGI(TAG, "Volume Down Button OnLongPress");
             //关机
-            PowerOff();
+            //PowerOff();
         });
     }
 

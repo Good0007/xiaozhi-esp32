@@ -12,7 +12,7 @@ namespace iot {
 // 这里仅定义 AadioPlayer 的属性和方法，不包含具体的实现
 class OnlineMp3Player : public Thing {
 public:
-    OnlineMp3Player() : Thing("OnlineMp3Player", "音乐播放器：支持搜索音乐、指定音乐名称播放、指定歌手|专辑|关键字播放（当用户需要听歌优先从这里搜索！）") {
+    OnlineMp3Player() : Thing("OnlineMp3Player", "音乐播放器(最高优先级)：支持搜索音乐、指定歌曲名称|歌手|专辑|关键字播放（当用户需要听歌必须从这里搜索！）") {
         properties_.AddStringProperty("musicState", "播放器状态：0 空闲 1 播放中", [this]() -> std::string {
             auto& app = Application::GetInstance();
             std::string state_ = (app.GetPlayingType() == PlayingType::Mp3Stream ? "1" : "0");

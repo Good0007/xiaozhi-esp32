@@ -532,7 +532,7 @@ void Application::PlayStream(PlayInfo &play_info) {
                 }
             }
             //打印当前缓冲区大小，提示等待缓冲
-            ESP_LOGI(TAG, "Buffer size: %zu bytes, waiting for more data...", ring_buffer->Size());
+            //ESP_LOGD(TAG, "Buffer size: %zu bytes, waiting for more data...", ring_buffer->Size());
         }
     } catch (const std::exception& e) {
         ESP_LOGE(TAG, "Exception in PlayOnlineStream: %s", e.what());
