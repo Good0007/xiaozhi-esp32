@@ -18,6 +18,7 @@
 #include <driver/spi_common.h>
 #include "ota_utils.h"
 #include "online_music.h"
+#include "sd_audio_reader.h"
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
@@ -76,6 +77,8 @@ private:
     bool volume_down_pressed_ = false; // 跟踪音量-按钮状态
     bool screen_on_ = true;  // 跟踪屏幕状态
     LcdDisplay* display_;
+    SDAudioReader sd_audio_reader_;
+
 
     void ToggleScreenOnOff() {
         if (!screen_on_) {
@@ -217,6 +220,10 @@ private:
         volume_up_button_.OnPressUp([this]() {
             ESP_LOGI(TAG, "Volume Up Button Released");
             volume_up_pressed_ = false;
+            //auto& app = Application::GetInstance();
+            // std::vector<std::string> result = sd_audio_reader_.searchPlayList("张学友",3);
+             //调用开始播放
+             //app.StartPlaying(PlayMode::Sequence,PlayingType::LocalAudio, 0);
             //测试音乐搜索接口
             /**
             std::string keyword = "张杰";
@@ -276,6 +283,9 @@ private:
 
     // 物联网初始化，添加对 AI 可见设备
     void InitializeIot() {
+        if (!sd_audio_reader_.initialize()) {
+            ESP_LOGE(TAG, "SD card initialization failed");
+        }
         auto& thing_manager = iot::ThingManager::GetInstance();
         thing_manager.AddThing(iot::CreateThing("Speaker"));
         thing_manager.AddThing(iot::CreateThing("Screen"));
@@ -283,6 +293,8 @@ private:
         thing_manager.AddThing(iot::CreateThing("RadioPlayer"));
         // 注册在线播放器
         thing_manager.AddThing(iot::CreateThing("OnlineMp3Player"));
+        // 注册SD卡播放器
+        thing_manager.AddThing(iot::CreateThing("LocalMp3Player"));
         //注册Switcher
         //thing_manager.AddThing(iot::CreateThing("Switcher"));
         // thing_manager.AddThing(iot::CreateThing("Lamp"));
@@ -334,6 +346,10 @@ public:
             return &backlight;
         }
         return nullptr;
+    }
+
+    virtual SDAudioReader* GetSDAudioReader() override {
+        return &sd_audio_reader_;
     }
 };
 

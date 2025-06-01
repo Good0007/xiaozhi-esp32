@@ -16,6 +16,7 @@
 #include "dummy_audio_processor.h"
 #endif
 
+#include <cstdio>
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
@@ -27,6 +28,7 @@
 #include "http/raing_buffer.h"
 #include "online_music.h"
 #include "ota_utils.h"
+#include "sd_audio_reader.h"
 #include <numeric>
 #include <random>
 
@@ -313,7 +315,7 @@ void Application::AddToPlayList(PlayInfo &play_info) {
     ESP_LOGI(TAG, "Add to play list: %s", play_info.name.c_str());
 }
 
-void Application::StartPlaying(PlayMode mode, int start_index) {
+void Application::StartPlaying(PlayMode mode,PlayingType playing_type, int start_index) {
     ESP_LOGI(TAG, "Start playing: %d", start_index);
     {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -329,7 +331,7 @@ void Application::StartPlaying(PlayMode mode, int start_index) {
             return audio_decode_queue_.empty();
         });
         SetDeviceState(kDeviceStateIdle);
-        playing_type_ = PlayingType::Mp3Stream;
+        playing_type_ = playing_type;
     }
 }
 
@@ -377,24 +379,30 @@ void Application::PlayOnlineList() {
     // 顺序播放时直接从begin_idx开始，随机播放时从begin_idx对应的随机序列开始
     for (size_t i = begin_idx; i < play_order.size(); ++i) {
         int idx = play_order[i];
-        if (playing_type_ != PlayingType::Mp3Stream) {
+        if (playing_type_ == PlayingType::None) {
             ESP_LOGI(TAG, "Play list end");
             break;
         }
+        
         PlayInfo info_ = play_list_[idx];
         current_play_index_ = idx;
-        if (info_.url.empty() && info_.id > 0) {
-            info_.url = MusicSearch::GetPlayUrl(info_.id);
+        if (playing_type_ == PlayingType::Mp3Stream) {
+            if (info_.url.empty() && info_.id > 0) {
+                info_.url = MusicSearch::GetPlayUrl(info_.id);
+            }
+            if (info_.url.empty()) {
+                ESP_LOGW(TAG, "Empty URL in play list");
+                continue;
+            }
+            if (playing_type_ != PlayingType::Mp3Stream) {
+                ESP_LOGW(TAG, "Not in MP3 stream mode, aborting playback");
+                break;
+            }
+            PlayStream(info_);
         }
-        if (info_.url.empty()) {
-            ESP_LOGW(TAG, "Empty URL in play list");
-            continue;
+        if (playing_type_ == PlayingType::LocalAudio) {
+            PlayLocalAudio(info_);
         }
-        if (playing_type_ != PlayingType::Mp3Stream) {
-            ESP_LOGW(TAG, "Not in MP3 stream mode, aborting playback");
-            break;
-        }
-        PlayStream(info_);
     }
     //播放完成
     auto display = Board::GetInstance().GetDisplay();
@@ -418,7 +426,7 @@ void Application::PlayStream(PlayInfo &play_info) {
     auto display = Board::GetInstance().GetDisplay();
     display->SetStatus("正在播放");
     display->SetChatMessage("system", ("当前播放: " + play_info.name).c_str());
-     auto codec = Board::GetInstance().GetAudioCodec();
+    auto codec = Board::GetInstance().GetAudioCodec();
     int output_sample_rate_ = codec->output_sample_rate();
     // 创建缓冲区和解码器
     std::unique_ptr<RingBuffer> ring_buffer = std::make_unique<RingBuffer>(32 * 1024);
@@ -573,7 +581,100 @@ void Application::ProcessDecodedPcmData(std::vector<int16_t>& pcm_data) {
 }
 
 
-void Application::PlayLocalAudio() {
+void Application::PlayLocalAudio(PlayInfo &play_info) {
+    std::string filename = play_info.name;
+    std::string filepath = std::string(MOUNT_POINT) + "/" + filename;
+    FILE* fp = fopen(filepath.c_str(), "rb");
+    if (!fp) {
+        ESP_LOGE(TAG, "Failed to open file: %s", filepath.c_str());
+        return;
+    }
+    ESP_LOGI(TAG, "Playing local file: %s", filename.c_str());
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus("正在播放");
+    display->SetChatMessage("system", ("当前播放: " + play_info.name).c_str());
+    // 跳过 ID3 标签
+    uint8_t id3_header[10];
+    size_t id3_read = fread(id3_header, 1, 10, fp);
+    if (id3_read == 10 && memcmp(id3_header, "ID3", 3) == 0) {
+        int tag_size = ((id3_header[6] & 0x7F) << 21) |
+                       ((id3_header[7] & 0x7F) << 14) |
+                       ((id3_header[8] & 0x7F) << 7) |
+                       (id3_header[9] & 0x7F);
+        fseek(fp, 10 + tag_size, SEEK_SET);
+        ESP_LOGI(TAG, "Skip ID3 tag, size: %d", tag_size);
+    } else {
+        fseek(fp, 0, SEEK_SET);
+    }
+
+    auto codec = Board::GetInstance().GetAudioCodec();
+    int output_sample_rate_ = codec->output_sample_rate();
+    std::unique_ptr<Mp3StreamDecoderWrapper> mp3_decoder = std::make_unique<Mp3StreamDecoderWrapper>(output_sample_rate_);
+
+    std::vector<uint8_t> mp3_buffer;
+    std::vector<int16_t> pcm_buffer;
+    const size_t READ_BUFFER_SIZE = 4096;
+    std::vector<uint8_t> read_buffer(READ_BUFFER_SIZE);
+
+    bool file_end = false;
+    int consecutive_fail = 0;
+    const int max_fail = 20;
+
+    // 预读一部分数据，类似网络流的首次缓冲
+    while (mp3_buffer.size() < 20 * 1024 && !file_end) {
+        size_t bytes_read = fread(read_buffer.data(), 1, read_buffer.size(), fp);
+        if (bytes_read == 0) {
+            file_end = true;
+            break;
+        }
+        mp3_buffer.insert(mp3_buffer.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
+    }
+
+    while (playing_type_ == PlayingType::LocalAudio) {
+        // 若缓冲区数据不够，继续读文件补充
+        if (mp3_buffer.size() < 4096 && !file_end) {
+            size_t bytes_read = fread(read_buffer.data(), 1, read_buffer.size(), fp);
+            if (bytes_read == 0) {
+                file_end = true;
+            } else {
+                mp3_buffer.insert(mp3_buffer.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
+            }
+        }
+
+        // 解码一帧
+        pcm_buffer.clear();
+        bool decoded = false;
+        size_t consumed = 0;
+        try {
+            decoded = mp3_decoder->DecodeFrame(mp3_buffer.data(), mp3_buffer.size(), pcm_buffer);
+            consumed = mp3_decoder->LastFrameBytes();
+        } catch (...) {
+            ESP_LOGE(TAG, "MP3 decode exception");
+            break;
+        }
+
+        if (consumed == 0) {
+            // 数据不够，等下次再解码
+            if (file_end) break;
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        // 移除已消耗数据
+        mp3_buffer.erase(mp3_buffer.begin(), mp3_buffer.begin() + consumed);
+
+        if (decoded && !pcm_buffer.empty()) {
+            ProcessDecodedPcmData(pcm_buffer); // 这里内部已做流式输出和等待
+            consecutive_fail = 0;
+        } else {
+            consecutive_fail++;
+            if (consecutive_fail > max_fail) {
+                ESP_LOGE(TAG, "Too many decode failures, skip file");
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    }
+    fclose(fp);
 }
 
 void Application::ToggleChatState() {
@@ -916,8 +1017,6 @@ void Application::Start() {
         ResetDecoder();
         PlaySound(Lang::Sounds::P3_SUCCESS);
     }
-    
-    // Enter the main event loop
     MainEventLoop();
 }
 
@@ -996,18 +1095,14 @@ void Application::AudioLoop() {
 // Playing audio Loop
 void Application::PlayingLoop() {
     while (true) {
-        if (playing_type_ != PlayingType::Mp3Stream) {
+        if (playing_type_ != PlayingType::Mp3Stream && playing_type_ != PlayingType::LocalAudio) {
             //ESP_LOGI(TAG, "Waiting for audio stream...");
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        if (playing_type_ == PlayingType::Mp3Stream) {
-            //PlayMp3Stream();
+        if (playing_type_ == PlayingType::Mp3Stream || playing_type_ == PlayingType::LocalAudio) {
             PlayOnlineList();
-        }  else if (playing_type_ == PlayingType::LocalAudio) {
-            PlayLocalAudio();
-        }
-        else {
+        } else {
             ESP_LOGW(TAG, "Unknown playing type: %d", (int)playing_type_);
         }
         vTaskDelay(pdMS_TO_TICKS(1000));

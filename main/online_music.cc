@@ -159,6 +159,7 @@ std::vector<PlayInfo> MusicSearch::GetPlayList(const std::string& keyword,int li
         play_info.name = info.name;
         play_info.tag = 0; // 音乐
         play_info.url = MusicSearch::GetPlayUrl(info.id, info.source);
+        play_info.type = PlayingType::Mp3Stream;
         ESP_LOGI("getPlayList", "ID: %d, Name: %s, URL: %s", info.id, play_info.name.c_str(), play_info.url.c_str());
         if (!play_info.url.empty()) {
             play_list.push_back(play_info);

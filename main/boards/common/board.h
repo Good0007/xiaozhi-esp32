@@ -9,6 +9,7 @@
 
 #include "led/led.h"
 #include "backlight.h"
+#include "sd_audio_reader.h"
 
 void* create_board();
 class AudioCodec;
@@ -49,6 +50,8 @@ public:
     virtual void SetPowerSaveMode(bool enabled) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual void PowerOff();
+    //虚函数，返回sd_audio_reader_对象
+    virtual SDAudioReader* GetSDAudioReader() { return nullptr; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

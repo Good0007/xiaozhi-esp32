@@ -1,3 +1,7 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <map>
 #ifndef SD_AUDIO_READER_H
 #define SD_AUDIO_READER_H
 
@@ -9,8 +13,6 @@
 #define SDMMC_CD_PIN GPIO_NUM_38
 #define MOUNT_POINT "/sdcard"
 
-#include <vector>
-#include <string>
 
 class SDAudioReader {
 public:
@@ -21,6 +23,9 @@ public:
     void listAudioFiles();
     int getAudioFileCount() const;
     const std::vector<std::string>& getAudioFiles() const;
+    std::vector<std::string> searchAudioFiles(const std::string& keyword) const;
+
+    std::vector<std::string> searchPlayList(const std::string& keyword, const int count) const;
 
     //获取全部音频文件列表，转换为字符串
     std::string getAllAsString() const {

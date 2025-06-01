@@ -7,6 +7,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include <driver/gpio.h>
+#include <algorithm> 
 
 static const char *TAG = "SDAudioReader";
 
@@ -75,15 +76,47 @@ void SDAudioReader::listAudioFiles()
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         std::string name(entry->d_name);
-        ESP_LOGE(TAG, "Found file: %s", name.c_str());
-        if (name.length() > 4) {
+        if (name.length() > 4 && name.substr(0, 2) != "._") {
             std::string ext = name.substr(name.length() - 4);
+            ESP_LOGI(TAG, "Found file: %s", name.c_str());
             if (ext == ".mp3") {
                 audioFiles.push_back(name);
             }
         }
     }
     closedir(dir);
+}
+
+std::vector<std::string> SDAudioReader::searchAudioFiles(const std::string& keyword) const
+{
+    std::vector<std::string> result;
+    if (keyword.empty()) return result;
+
+    // 转小写
+    std::string keyword_lower = keyword;
+    std::transform(keyword_lower.begin(), keyword_lower.end(), keyword_lower.begin(), ::tolower);
+
+    for (const auto& name : audioFiles) {
+        std::string name_lower = name;
+        std::transform(name_lower.begin(), name_lower.end(), name_lower.begin(), ::tolower);
+        if (name_lower.find(keyword_lower) != std::string::npos) {
+            result.push_back(name);
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> SDAudioReader::searchPlayList(const std::string& keyword, const int count) const
+{
+    std::vector<std::string> result = searchAudioFiles(keyword);
+    if (keyword.empty()) return result;
+    // 如果指定了数量，截取前 count 个
+    if (count > 0 && count < result.size()) {
+        result.resize(count);
+    }
+    // 随机打乱结果
+    std::random_shuffle(result.begin(), result.end());
+    return result;
 }
 
 int SDAudioReader::getAudioFileCount() const

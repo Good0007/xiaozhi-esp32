@@ -61,6 +61,8 @@ struct PlayInfo {
     int id = 0;
     std::string name;
     std::string url = "";
+    //播放类型
+    PlayingType type = PlayingType::None;
     uint8_t tag = 0;  // 0: 音乐 1 : 新闻 2: 交通 3: 财经
 };
 
@@ -96,7 +98,7 @@ public:
     //传入类型和地址
     void ChangePlaying(PlayingType type, std::vector<PlayInfo> &play_list);
     //开始播放
-    void StartPlaying(PlayMode mode = PlayMode::Sequence, int start_index = 0);
+    void StartPlaying(PlayMode mode = PlayMode::Sequence,PlayingType play_type = PlayingType::Mp3Stream, int start_index = 0);
     //加入到播放列表
     void AddToPlayList(PlayInfo &play_info);
     //清空播放列表
@@ -106,7 +108,7 @@ public:
     //获取播放列表
     std::vector<PlayInfo> GetPlayList() const { return play_list_; }
     void ProcessDecodedPcmData(std::vector<int16_t>& pcm_data);
-    void PlayLocalAudio();
+    void PlayLocalAudio(PlayInfo &play_info);
     void PlayOnlineList();
     void PlayStream(PlayInfo &play_info);
     PlayingType GetPlayingType() const;

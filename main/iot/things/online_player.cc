@@ -12,7 +12,7 @@ namespace iot {
 // 这里仅定义 AadioPlayer 的属性和方法，不包含具体的实现
 class OnlineMp3Player : public Thing {
 public:
-    OnlineMp3Player() : Thing("OnlineMp3Player", "音乐播放器(最高优先级)：支持搜索音乐、指定歌曲名称|歌手|专辑|关键字播放（当用户需要听歌必须从这里搜索！）") {
+    OnlineMp3Player() : Thing("OnlineMp3Player", "音乐播放器(最高优先级)：支持搜索音乐、指定歌曲名称|歌手|专辑|关键字播放（当用户要听歌从这里搜索,不要使用search_music工具！）") {
         properties_.AddStringProperty("musicState", "播放器状态：0 空闲 1 播放中", [this]() -> std::string {
             auto& app = Application::GetInstance();
             std::string state_ = (app.GetPlayingType() == PlayingType::Mp3Stream ? "1" : "0");
@@ -20,22 +20,35 @@ public:
             return state_;
         });
 
-        properties_.AddStringProperty("playListInfo", "获取播放列表信息", [this]() -> std::string {
-             std::vector<PlayInfo> play_list_ = Application::GetInstance().GetPlayList();
-             std::string first_name = "";
-            if (!play_list_.empty()) {
-                first_name = play_list_[0].name;
+        properties_.AddStringProperty("playMp3List", "获取播放列表信息", [this]() -> std::string {
+            std::string first_name = "";
+            int count = 0;
+            auto& app = Application::GetInstance();
+            std::vector<PlayInfo> play_list_ = app.GetPlayList();
+            if (play_list_.empty()) {
+                return "当前列表没有在线音乐";
             }
-             ESP_LOGI(TAG, "playListInfo: count = %d, first_name = %s",play_list_.size(), first_name.c_str());
-             return std::to_string(play_list_.size())+"首加入到播放列表,第一首:" + first_name;
+            for (const auto& info : play_list_) {
+                if (info.type == PlayingType::Mp3Stream) {
+                    count++;
+                    if (first_name.empty()) {
+                        first_name = info.name;
+                    }
+                }
+            }
+            if (count == 0) {
+                return "当前列表没有在线音乐";
+            }
+            ESP_LOGI(TAG, "playMp3List: count = %d, first_name = %s",count, first_name.c_str());
+            return std::to_string(count)+"首加入到播放列表,第一首:" + first_name;
         });
 
         methods_.AddMethod("musicSearch", "搜索音乐",  ParameterList({
-            Parameter("keyword", "搜索关键字：可以是音乐名称/歌手等", kValueTypeString, true),
-            Parameter("count", "搜索数量：默认10 (如果用户明确搜索指定歌曲，就传入1)", kValueTypeNumber, false),
+            Parameter("search_key", "搜索关键字：可以是音乐名称/歌手等", kValueTypeString, true),
+            Parameter("search_num", "搜索数量：默认10 (如果用户明确搜索指定歌曲，就传入1)", kValueTypeNumber, false),
         }), [this](const ParameterList& parameters) -> std::string {
-                std::string keyword = parameters["keyword"].string();
-                int count = parameters["count"].number();
+                std::string keyword = parameters["search_key"].string();
+                int count = parameters["search_num"].number();
                 if (count <= 0) {
                     count = 10;
                 }
@@ -53,6 +66,7 @@ public:
                     PlayInfo info;
                     info.id = music.id;
                     info.name = music.name;
+                    info.type = PlayingType::Mp3Stream;
                     //最后一个不加\n
                     if (idx == misuc_list_.size() - 1) {
                         msg += std::to_string(idx++) + ". " + info.name;
@@ -92,7 +106,7 @@ public:
                 ESP_LOGI(TAG, "startPlay: model = %d,start = %d, size = %d",model, start, play_list_.size());
                 PlayMode mode_ = static_cast<PlayMode>(model);
                 ESP_LOGI(TAG, "startPlay: %s", play_list_[0].name.c_str());
-                app.StartPlaying(mode_,start);
+                app.StartPlaying(mode_,PlayingType::Mp3Stream, start);
                 return "开始播放";
         });
 
