@@ -13,9 +13,9 @@
 #include "mbedtls/md5.h"
 #include <sstream>
 
-//_后边是时间戳 1746943308218
-#define MUSIC_SEARCH_URL "https://music.gdstudio.xyz/api.php?callback=jQuery111307358914372812725_"
-#define MUSIC_GET_PLAY_URL "https://music.gdstudio.xyz/api.php?callback=jQuery111305091133827048107_"
+//_后边是时间戳 1746943308218 jQuery111309143721026786447_1751803339220 / jQuery111309920893339609925_
+#define MUSIC_SEARCH_URL "https://music.gdstudio.xyz/api.php?callback=jQuery111309920893339609925_"
+#define MUSIC_GET_PLAY_URL "https://music.gdstudio.xyz/api.php?callback==jQuery111309920893339609925_"
 
 /**
  * 
@@ -65,28 +65,42 @@ std::string md5(const std::string& input) {
     return oss.str();
 }
 
-// 生成s参数
-std::string calc_s_param(const std::string& id, const std::string& version) {
-    // 1. 补零拼接
-    std::stringstream v1ss;
-    std::istringstream iss(version);
-    std::string seg;
-    while (std::getline(iss, seg, '.')) {
-        if (seg.length() == 1) v1ss << "0" << seg;
-        else v1ss << seg;
+
+// 辅助函数：将版本号每段补零
+std::string pad_version(const std::string& version) {
+    std::stringstream ss(version);
+    std::string item, result;
+    while (std::getline(ss, item, '.')) {
+        if (item.length() == 1) result += "0" + item;
+        else result += item;
     }
-    std::string v1 = v1ss.str();
-    // 2. 反转
-    std::string v2 = v1;
-    std::reverse(v2.begin(), v2.end());
-    // 3. 拼接
-    std::string str = v1 + "s" + id + "s" + v2;
-    // 4. md5
-    std::string md5Result = md5(str);
-    // 5. 取最后8位并转大写
-    std::string s = md5Result.substr(md5Result.length() - 8);
-    std::transform(s.begin(), s.end(), s.begin(), ::toupper);
-    return s;
+    return result;
+}
+
+// 生成s参数 从 ： https://music.gdstudio.xyz/js/secret.min.js?v=20250616 分析
+std::string calc_s_param(const std::string& song_id, const std::string& version = "1.0.0") {
+    std::string domain = "music.gdstudio.xyz";
+    std::string ver = pad_version(version);
+    std::string src = domain + "|" + ver + "|" + song_id;
+
+    unsigned char md5_result[16];
+    mbedtls_md5_context ctx;
+    mbedtls_md5_init(&ctx);
+    mbedtls_md5_starts(&ctx);
+    mbedtls_md5_update(&ctx, (const unsigned char*)src.c_str(), src.size());
+    mbedtls_md5_finish(&ctx, md5_result);
+    mbedtls_md5_free(&ctx);
+
+    // 转为16进制字符串
+    std::ostringstream oss;
+    for (int i = 0; i < 16; ++i)
+        oss << std::hex << std::setw(2) << std::setfill('0') << (int)md5_result[i];
+    std::string md5_str = oss.str();
+
+    // 取最后8位并转大写
+    std::string s_param = md5_str.substr(md5_str.size() - 8);
+    for (auto& c : s_param) c = toupper(c);
+    return s_param;
 }
 
 // 简单 GET 请求，返回响应内容（失败返回空字符串）
@@ -264,7 +278,8 @@ std::vector<MusicInfo> MusicSearch::Search(const std::string& keyword, int count
 /***
  * 
  * //获取播放地址：传入上一步获取的id
- * https://music.gdstudio.xyz/api.php?callback=jQuery111305091133827048107_1746943401683&types=url&id=2683819218&source=netease&br=320&s=A8C37883
+ * /api.php?callback=jQuery111305091133827048107_1746943401683&types=url&id=2683819218&source=netease&br=320&s=A8C37883
+ * /api.php?callback=jQuery111309143721026786447_1751803339219&types=url&id=3249185&source=kuwo&br=192&s=8CB5B084&_=1751803339233
  * 
  * jQuery111305091133827048107_1746943401683({
 	"url": "https://m701.music.126.net/20250511225508/8bb7042a63bba217aa2d1bc682636b05/jdymusic/obj/wo3DlMOGwrbDjj7DisKw/59695601882/042b/1f8b/7a5c/47f920bdad87770c03331a577f8d6dd7.mp3",
@@ -278,7 +293,7 @@ std::string MusicSearch::GetPlayUrl(const int32_t id, const std::string& source)
     uint64_t ms = static_cast<uint64_t>(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
     std::string url = MUSIC_GET_PLAY_URL + std::to_string(ms) + "&types=url&id=" + std::to_string(id) +
                             "&source=" + source +
-                            "&br=320&s=" + calc_s_param(std::to_string(id), "2025.4.27");
+                            "&br="+ PLAY_BR +"&s=" + calc_s_param(std::to_string(id), PLAY_VERSION);
     ESP_LOGI("GetPlayUrl", "HTTP GET: %s", url.c_str());
     std::string body = SimpleHttpGet(url);
     ESP_LOGI("GetPlayUrl", "Body: %s", body.c_str());

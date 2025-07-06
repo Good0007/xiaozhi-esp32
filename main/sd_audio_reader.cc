@@ -90,7 +90,10 @@ void SDAudioReader::listAudioFiles()
 std::vector<std::string> SDAudioReader::searchAudioFiles(const std::string& keyword) const
 {
     std::vector<std::string> result;
-    if (keyword.empty()) return result;
+    if (keyword.empty()) {
+        // 如果关键字为空，随机返回10个音频文件
+        return audioFiles;
+    }
 
     // 转小写
     std::string keyword_lower = keyword;

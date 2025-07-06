@@ -47,7 +47,7 @@ public:
             return std::to_string(count)+"首加入到播放列表,第一首:" + first_name;
         });
 
-        methods_.AddMethod("localMusicSearch", "搜索本地音乐",  ParameterList({
+        methods_.AddMethod("localMusicSearch", "搜索本地音乐（关键字为空则随机返回20个）",  ParameterList({
             Parameter("keyword", "搜索关键字：可以是音乐名称/歌手", kValueTypeString, true),
             Parameter("count", "搜索数量：默认10 (如果用户明确搜索指定歌曲，就传入1)", kValueTypeNumber, false),
         }), [this](const ParameterList& parameters) -> std::string {
@@ -106,7 +106,32 @@ public:
                 auto& app = Application::GetInstance();
                 std::vector<PlayInfo> play_list_ = app.GetPlayList();
                 if (play_list_.empty()) {
-                    return "播放列表为空!";
+                    //return "播放列表为空!";
+                    //随机搜索20首
+                    std::vector<std::string> misuc_list_ = Board::GetInstance().
+                    GetSDAudioReader()->searchPlayList("", 10);
+                    //循环搜索结果，拼接成一个List结果
+                    ESP_LOGI(TAG, "localMusicSearch: 找到 %s 首音乐！", std::to_string(misuc_list_.size()).c_str());
+                    auto& app = Application::GetInstance();
+                    Display* display = Board::GetInstance().GetDisplay();
+                    //循环加入到播放列表
+                    std::string msg = "找到本地歌曲:\n";
+                    app.ClearPlayList();
+                    int idx = 0;
+                    for (const auto& music : misuc_list_) {
+                        PlayInfo info;
+                        info.name = music;
+                        info.type = PlayingType::LocalAudio;
+                        //最后一个不加\n
+                        if (idx == misuc_list_.size() - 1) {
+                            msg += std::to_string(idx++) + ". " + info.name;
+                        } else {
+                            msg += std::to_string(idx++) + ". " + info.name + "\n";
+                        }
+                        //display->SetChatMessage("assistant", msg.c_str());
+                        app.AddToPlayList(info);
+                    }
+                    display->SetChatMessage("assistant", msg.c_str());
                 } 
                 if (start >= play_list_.size()) {
                     start = 0;
@@ -117,6 +142,7 @@ public:
                 app.StartPlaying(mode_, PlayingType::LocalAudio, start);
                 return "开始播放";
         });
+        
 
     }
 
