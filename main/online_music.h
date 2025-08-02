@@ -22,8 +22,8 @@ enum class SourceType {
 
 //默认源
 #define DEFAULT_SOURCE "netease"
-#define PLAY_VERSION "2025.6.16"
 #define PLAY_BR "192"
+#define MUSIC_API "https://chenweikang.top/v1/music"
 
 class MusicSearch {
 public:

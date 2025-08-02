@@ -13,95 +13,8 @@
 #include "mbedtls/md5.h"
 #include <sstream>
 
-//_后边是时间戳 1746943308218 jQuery111309143721026786447_1751803339220 / jQuery111309920893339609925_
-#define MUSIC_SEARCH_URL "https://music.gdstudio.xyz/api.php?callback=jQuery111309920893339609925_"
-#define MUSIC_GET_PLAY_URL "https://music.gdstudio.xyz/api.php?callback==jQuery111309920893339609925_"
+#define AUTH_TOKEN "d5xohNTsUsoGb65x"
 
-/**
- * 
- * mkPlayer = {
-    "api": "api.php",
-    "loadcount": 20,
-    "maxerror": 3,
-    "method": "POST",
-    "defaultlist": 1,
-    "fadeInOut": 3,
-    "autoplay": false,
-    "coverbg": true,
-    "mcoverbg": false,
-    "dotshine": false,
-    "showtime": true,
-    "mdotshine": false,
-    "lyrictitle": false,
-    "homelist": false,
-    "refreshlist": false,
-    "autoeq": false,
-    "desktoplyrics": false,
-    "nameformat": 0,
-    "volume": 1,
-    "version": "2025.4.27",
-    "email": "gdstudio@email.com",
-    "apiurl": "https://music-api.gdstudio.xyz/api.php",
-    "appdir": "gdmusic.apk",
-    "appver": 1.1,
-    "dldir": "DesktopLyrics.exe",
-    "dlver": 1,
-    "proxyUrl": "https://cors-proxy.gdstudio.workers.dev"
-}
- * 
- */
-// 计算字符串的MD5，返回32位小写hex字符串
-std::string md5(const std::string& input) {
-    unsigned char digest[16];
-    mbedtls_md5_context ctx;
-    mbedtls_md5_init(&ctx);
-    mbedtls_md5_starts(&ctx);
-    mbedtls_md5_update(&ctx, reinterpret_cast<const unsigned char*>(input.data()), input.size());
-    mbedtls_md5_finish(&ctx, digest);
-    mbedtls_md5_free(&ctx);
-    std::ostringstream oss;
-    for (int i = 0; i < 16; ++i)
-        oss << std::hex << std::setw(2) << std::setfill('0') << (int)digest[i];
-    return oss.str();
-}
-
-
-// 辅助函数：将版本号每段补零
-std::string pad_version(const std::string& version) {
-    std::stringstream ss(version);
-    std::string item, result;
-    while (std::getline(ss, item, '.')) {
-        if (item.length() == 1) result += "0" + item;
-        else result += item;
-    }
-    return result;
-}
-
-// 生成s参数 从 ： https://music.gdstudio.xyz/js/secret.min.js?v=20250616 分析
-std::string calc_s_param(const std::string& song_id, const std::string& version = "1.0.0") {
-    std::string domain = "music.gdstudio.xyz";
-    std::string ver = pad_version(version);
-    std::string src = domain + "|" + ver + "|" + song_id;
-
-    unsigned char md5_result[16];
-    mbedtls_md5_context ctx;
-    mbedtls_md5_init(&ctx);
-    mbedtls_md5_starts(&ctx);
-    mbedtls_md5_update(&ctx, (const unsigned char*)src.c_str(), src.size());
-    mbedtls_md5_finish(&ctx, md5_result);
-    mbedtls_md5_free(&ctx);
-
-    // 转为16进制字符串
-    std::ostringstream oss;
-    for (int i = 0; i < 16; ++i)
-        oss << std::hex << std::setw(2) << std::setfill('0') << (int)md5_result[i];
-    std::string md5_str = oss.str();
-
-    // 取最后8位并转大写
-    std::string s_param = md5_str.substr(md5_str.size() - 8);
-    for (auto& c : s_param) c = toupper(c);
-    return s_param;
-}
 
 // 简单 GET 请求，返回响应内容（失败返回空字符串）
 std::string SimpleHttpGet(const std::string& url) {
@@ -133,6 +46,68 @@ std::string SimpleHttpGet(const std::string& url) {
     if (content_length <= 0) {
         bool is_chunk = esp_http_client_is_chunked_response(client);
         ESP_LOGI("SimpleHttpGet", "is_chunk: %d", is_chunk);
+    }
+    
+    std::string result;
+    char buffer[512];
+    int read_len = 0;
+    while ((read_len = esp_http_client_read(client, buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[read_len] = 0;
+        result += buffer;
+    }
+
+    esp_http_client_cleanup(client);
+    return result;
+}
+
+// 简单 POST 请求，返回响应内容（失败返回空字符串）
+std::string SimpleHttpPost(const std::string& url, 
+    const std::string& post_data, 
+    const std::string& content_type = "application/x-www-form-urlencoded; charset=UTF-8",
+    const std::string& auth_token = "") {
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = 10000; // 10秒超时
+    config.crt_bundle_attach = esp_crt_bundle_attach; // 使用证书捆绑
+    config.buffer_size = 2048; // 设置缓冲区大小
+    config.skip_cert_common_name_check = true; // 跳过证书公用名检查
+    config.is_async = false;    // 确保同步模式
+    config.disable_auto_redirect = false;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        ESP_LOGE("SimpleHttpPost", "Failed to init http client");
+        return "";
+    }
+
+    // 设置请求头
+    esp_http_client_set_header(client, "Content-Type", content_type.c_str());
+    if (!auth_token.empty()) {
+        esp_http_client_set_header(client, "auth-token", auth_token.c_str());
+    }
+    esp_http_client_set_post_field(client, post_data.c_str(), post_data.length());
+
+    esp_err_t err = esp_http_client_open(client, post_data.length());
+    if (err != ESP_OK) {
+        ESP_LOGE("SimpleHttpPost", "Failed to open http connection: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return "";
+    }
+
+    // 写入POST数据
+    int write_len = esp_http_client_write(client, post_data.c_str(), post_data.length());
+    if (write_len < 0) {
+        ESP_LOGE("SimpleHttpPost", "Failed to write POST data");
+        esp_http_client_cleanup(client);
+        return "";
+    }
+
+    int64_t content_length = esp_http_client_fetch_headers(client);
+    ESP_LOGI("SimpleHttpPost", "fetch_headers: %lld", content_length);
+    if (content_length <= 0) {
+        bool is_chunk = esp_http_client_is_chunked_response(client);
+        ESP_LOGI("SimpleHttpPost", "is_chunk: %d", is_chunk);
     }
     
     std::string result;
@@ -225,31 +200,53 @@ PlayInfo MusicSearch::getPlayInfo(const std::string& keyword, const std::string&
     return play_info;
 }
 
+/***
+ * 搜索音乐
+ * 根据 curl 注释更新的新接口：
+ * curl -X POST https://chenweikang.top/v1/music -H "auth-token:d5xohNTsUsoGb65x" \
+ *   -d "types=search" \
+ *   -d "count=2" \
+ *   -d "source=netease" \
+ *   -d "pages=1" \
+ *   -d "name=%E5%91%A8%E6%9D%B0%E4%BC%A6"
+ * 响应格式：{"code":0,"msg":"success","data":[{"id":210049,"name":"布拉格广场","artist":["蔡依林","周杰伦"],"album":"看我72变","pic_id":"109951171530950893","url_id":210049,"lyric_id":210049,"source":"netease"}]}
+ */
 std::vector<MusicInfo> MusicSearch::Search(const std::string& keyword, int count, int page, const std::string& source) {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    uint64_t ms = static_cast<uint64_t>(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
-    std::string url = MUSIC_SEARCH_URL + std::to_string(ms) + "&types=search&count=" + std::to_string(count) +
+    std::string url = MUSIC_API;
+    std::string post_data = "types=search&count=" + std::to_string(count) +
                             "&source=" + source +
                             "&pages=" + std::to_string(page) +
                             "&name=" + UrlEncode(keyword);
-    ESP_LOGI("MusicSearch", "HTTP GET: %s", url.c_str());
-    std::string body = SimpleHttpGet(url);
-    //delete http;
+
+    ESP_LOGI("MusicSearch", "POST data: %s", post_data.c_str());
+    std::string body = SimpleHttpPost(url, post_data, "application/x-www-form-urlencoded; charset=UTF-8", AUTH_TOKEN);
     ESP_LOGI("MusicSearch", "Body: %s", body.c_str());
-    // 处理 JSONP 响应，提取括号内 JSON
-    size_t l = body.find('('), r = body.rfind(')');
-    if (l == std::string::npos || r == std::string::npos || r <= l) return {};
-    std::string json = body.substr(l + 1, r - l - 1);
-    ESP_LOGI("MusicSearch", "JSON: %s", json.c_str());
-    cJSON* root = cJSON_Parse(json.c_str());
-    if (!root || !cJSON_IsArray(root)) {
+    
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root || !cJSON_IsObject(root)) {
         if (root) cJSON_Delete(root);
         return {};
     }
+
+    // 检查响应码
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    if (!code || !cJSON_IsNumber(code) || code->valueint != 0) {
+        ESP_LOGE("MusicSearch", "API returned error code: %d", code ? code->valueint : -1);
+        cJSON_Delete(root);
+        return {};
+    }
+
+    // 获取数据数组
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    if (!data || !cJSON_IsArray(data)) {
+        ESP_LOGE("MusicSearch", "Invalid data format");
+        cJSON_Delete(root);
+        return {};
+    }
+
     std::vector<MusicInfo> result;
     cJSON* item = nullptr;
-    cJSON_ArrayForEach(item, root) {
+    cJSON_ArrayForEach(item, data) {
         MusicInfo info;
         cJSON* id = cJSON_GetObjectItem(item, "id");
         cJSON* name = cJSON_GetObjectItem(item, "name");
@@ -276,41 +273,49 @@ std::vector<MusicInfo> MusicSearch::Search(const std::string& keyword, int count
 }
 
 /***
- * 
- * //获取播放地址：传入上一步获取的id
- * /api.php?callback=jQuery111305091133827048107_1746943401683&types=url&id=2683819218&source=netease&br=320&s=A8C37883
- * /api.php?callback=jQuery111309143721026786447_1751803339219&types=url&id=3249185&source=kuwo&br=192&s=8CB5B084&_=1751803339233
- * 
- * jQuery111305091133827048107_1746943401683({
-	"url": "https://m701.music.126.net/20250511225508/8bb7042a63bba217aa2d1bc682636b05/jdymusic/obj/wo3DlMOGwrbDjj7DisKw/59695601882/042b/1f8b/7a5c/47f920bdad87770c03331a577f8d6dd7.mp3",
-	"size": 9836205,
-	"br": 320
-})
+ * 获取播放地址
+ * 根据 curl 注释更新的新接口：
+ * curl -X POST https://chenweikang.top/v1/music -H "auth-token:d5xohNTsUsoGb65x" \
+ *   -d "types=url&id=566900022&source=netease"
+ * 响应格式：{"code":0,"msg":"success","data":{"url":"https://music.163.com/song/media/outer/url?id=566900022.mp3"}}
  */
 std::string MusicSearch::GetPlayUrl(const int32_t id, const std::string& source) {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    uint64_t ms = static_cast<uint64_t>(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
-    std::string url = MUSIC_GET_PLAY_URL + std::to_string(ms) + "&types=url&id=" + std::to_string(id) +
+    std::string url = MUSIC_API;
+    std::string post_data = "types=url&id=" + std::to_string(id) +
                             "&source=" + source +
-                            "&br="+ PLAY_BR +"&s=" + calc_s_param(std::to_string(id), PLAY_VERSION);
-    ESP_LOGI("GetPlayUrl", "HTTP GET: %s", url.c_str());
-    std::string body = SimpleHttpGet(url);
+                            "&br=" + PLAY_BR;
+                            
+    ESP_LOGI("GetPlayUrl", "POST data: %s", post_data.c_str());
+    std::string body = SimpleHttpPost(url, post_data, "application/x-www-form-urlencoded; charset=UTF-8", AUTH_TOKEN);
     ESP_LOGI("GetPlayUrl", "Body: %s", body.c_str());
-    // 处理 JSONP 响应，提取括号内 JSON
-    size_t l = body.find('('), r = body.rfind(')');
-    if (l == std::string::npos || r == std::string::npos || r <= l) return {};
-    std::string json = body.substr(l + 1, r - l - 1);
-    cJSON* root = cJSON_Parse(json.c_str());
+    
+    cJSON* root = cJSON_Parse(body.c_str());
     if (!root || !cJSON_IsObject(root)) {
         if (root) cJSON_Delete(root);
         return {};
     }
+
+    // 检查响应码
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    if (!code || !cJSON_IsNumber(code) || code->valueint != 0) {
+        ESP_LOGE("GetPlayUrl", "API returned error code: %d", code ? code->valueint : -1);
+        cJSON_Delete(root);
+        return {};
+    }
+
+    // 获取数据对象
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    if (!data || !cJSON_IsObject(data)) {
+        ESP_LOGE("GetPlayUrl", "Invalid data format");
+        cJSON_Delete(root);
+        return {};
+    }
+
     std::string result;
-    cJSON* item = cJSON_GetObjectItem(root, "url");
-    if (item && cJSON_IsString(item)) {
-        result = item->valuestring;
-        ESP_LOGI("MusicSearch", "Play URL: %s", result.c_str());
+    cJSON* url_item = cJSON_GetObjectItem(data, "url");
+    if (url_item && cJSON_IsString(url_item)) {
+        result = url_item->valuestring;
+        ESP_LOGI("GetPlayUrl", "Play URL: %s", result.c_str());
     }
     cJSON_Delete(root);
     return result;
